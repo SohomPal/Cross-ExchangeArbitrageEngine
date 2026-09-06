@@ -8,11 +8,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(arbitrage_core src/core/fixed_point.cpp src/core/order_book.cpp)
 target_include_directories(arbitrage_core PUBLIC include)
 
+add_library(coinbase_adapter
+    src/adapters/coinbase/coinbase_l2_parser.cpp
+    src/adapters/coinbase/coinbase_symbol_mapper.cpp)
+target_link_libraries(coinbase_adapter PUBLIC arbitrage_core)
+target_include_directories(coinbase_adapter SYSTEM PRIVATE third_party)
+
 add_executable(arbitrage_engine src/main.cpp)
 target_link_libraries(arbitrage_engine PRIVATE arbitrage_core)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(coinbase_l2_parser_test tests/unit/coinbase_l2_parser_test.cpp)
+    target_include_directories(coinbase_l2_parser_test SYSTEM PRIVATE tests/vendor third_party)
+    target_compile_definitions(coinbase_l2_parser_test PRIVATE
+        FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+    target_link_libraries(coinbase_l2_parser_test PRIVATE coinbase_adapter)
+    add_test(NAME coinbase_l2_parser_test COMMAND coinbase_l2_parser_test)
     add_executable(fixed_point_test tests/unit/fixed_point_test.cpp)
     target_include_directories(fixed_point_test SYSTEM PRIVATE tests/vendor)
     target_link_libraries(fixed_point_test PRIVATE arbitrage_core)
