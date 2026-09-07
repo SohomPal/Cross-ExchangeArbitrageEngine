@@ -8,6 +8,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(arbitrage_core src/core/fixed_point.cpp src/core/order_book.cpp)
 target_include_directories(arbitrage_core PUBLIC include)
 
+add_library(raw_recording
+    src/recording/raw_event_recorder.cpp
+    src/recording/raw_event_reader.cpp)
+target_link_libraries(raw_recording PUBLIC arbitrage_core)
+target_include_directories(raw_recording SYSTEM PRIVATE third_party)
+
 add_library(coinbase_adapter
     src/adapters/coinbase/coinbase_l2_parser.cpp
     src/adapters/coinbase/coinbase_symbol_mapper.cpp)
@@ -37,4 +43,10 @@ if(BUILD_TESTING)
     target_include_directories(order_book_test SYSTEM PRIVATE tests/vendor)
     target_link_libraries(order_book_test PRIVATE arbitrage_core)
     add_test(NAME order_book_test COMMAND order_book_test)
+    add_executable(raw_event_recorder_test tests/unit/raw_event_recorder_test.cpp)
+    target_include_directories(raw_event_recorder_test SYSTEM PRIVATE tests/vendor third_party)
+    target_compile_definitions(raw_event_recorder_test PRIVATE
+        FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+    target_link_libraries(raw_event_recorder_test PRIVATE raw_recording coinbase_adapter)
+    add_test(NAME raw_event_recorder_test COMMAND raw_event_recorder_test)
 endif()
