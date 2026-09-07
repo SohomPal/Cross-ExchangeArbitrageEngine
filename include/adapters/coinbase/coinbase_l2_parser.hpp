@@ -17,6 +17,8 @@ struct CoinbaseParseResult {
     std::string error;
     // Owned envelope preserves per-change event_time and unknown metadata.
     std::string raw_message;
+    // Envelope sequence is extracted even for ignored non-L2 channels.
+    std::optional<std::uint64_t> sequence;
 };
 
 class CoinbaseL2Parser {

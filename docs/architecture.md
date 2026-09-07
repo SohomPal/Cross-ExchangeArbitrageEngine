@@ -2,7 +2,7 @@
 
 The executable composes a single-thread Coinbase feed: WebSocket → raw recording
 → canonical parsing → L2 order book → periodic health/BBO display. Offline replay
-uses the same message pipeline. Trading and automatic feed recovery are deferred.
+uses the same parser, sequence tracker, and book types. Trading is deferred.
 
 ## Components
 
@@ -12,6 +12,7 @@ uses the same message pipeline. Trading and automatic feed recovery are deferred
 | `coinbase_adapter` | Translate Coinbase Level 2 JSON into canonical events using product metadata | `include/adapters/coinbase/`, `src/adapters/coinbase/` |
 | `raw_recording` | Write and read raw messages with receive timestamps and connection metadata | `include/recording/`, `src/recording/` |
 | `coinbase_websocket` | TLS connection, sequential subscriptions, reads, and close | `include/adapters/coinbase/`, `src/adapters/coinbase/` |
+| `coinbase_recovery` | Sequence continuity, feed health, backoff, session generations, and snapshot gating | `include/adapters/coinbase/`, `src/adapters/coinbase/` |
 | `arbitrage_engine` | Compose live ingestion or offline replay | `src/main.cpp` |
 
 Both the Coinbase adapter and raw recording library depend on the core library.
@@ -32,9 +33,10 @@ reject duplicate side/price entries; updates process repeated entries in order.
 
 Raw recording preserves messages for later debugging, replay, and audit. The
 message pipeline records before parsing and invalidates the book on recording,
-parsing, or application failure. Network errors also invalidate it. Invalidation
-retains diagnostic levels; consumers must check state before using prices. Sequence
-gaps, stale detection, and reconnection remain future work. Transport failures are
+parsing, or application failure. Network errors disconnect it. All non-Valid
+states hide best prices while retaining diagnostic levels. Sequence gaps and
+monotonic health timeouts trigger bounded retries with fresh session IDs.
+Heartbeats are connection events outside the market-event variant. Transport failures are
 reported out of band and are not raw messages; replay reconstructs received data,
 not terminal network health.
 

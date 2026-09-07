@@ -16,8 +16,11 @@ Trading logic is not implemented.
 The recording path must be new. The feed subscribes to public BTC-USD `level2`
 and `heartbeats`, records every message before parsing, and prints book state
 and BBO once per second. SIGINT/SIGTERM closes the socket and flushes the file.
-Errors invalidate the book and exit nonzero. This slice uses one connection and
-one thread; reconnection, gap recovery, and stale-book detection are deferred.
+Integrity failures make the book unavailable and trigger bounded reconnection.
+Each session requires a fresh snapshot. Heartbeat and no-message timeouts use
+monotonic time. The process uses one I/O thread; recordings span connection IDs.
+Use `--force-disconnect-after-seconds 30` for the development recovery exercise.
+Sequence continuity includes all channels; only L2 messages modify the book.
 
 ## Documentation
 

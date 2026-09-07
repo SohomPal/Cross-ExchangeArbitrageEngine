@@ -1,6 +1,7 @@
 #pragma once
 #include "adapters/coinbase/coinbase_l2_parser.hpp"
 #include "core/order_book.hpp"
+#include "core/sequence_tracker.hpp"
 #include <functional>
 
 namespace adapters::coinbase {
@@ -10,6 +11,12 @@ class CoinbaseMessagePipeline {
     using Sink = std::function<bool(std::string_view, core::ReceiveWallTimestamp,
                                     core::ReceiveMonotonicTimestamp)>;
     explicit CoinbaseMessagePipeline(Sink sink) : sink_(std::move(sink)) {}
+    void reset_connection() {
+        stopped_ = false;
+        error.clear();
+        sequence_.reset();
+        book.mark_initializing();
+    }
     bool process(std::string_view raw, core::ReceiveWallTimestamp wall,
                  core::ReceiveMonotonicTimestamp monotonic) {
         if (stopped_)
@@ -22,10 +29,24 @@ class CoinbaseMessagePipeline {
             ++parse_errors;
             return fail(result.error);
         }
+        if (result.sequence) {
+            auto observed = sequence_.observe(*result.sequence);
+            if (observed == core::SequenceResult::Duplicate ||
+                observed == core::SequenceResult::OutOfOrder)
+                return true;
+            if (observed == core::SequenceResult::Gap)
+                return fail("Coinbase envelope sequence gap");
+        }
+        if (result.status == ParseStatus::Parsed && book.state() != core::BookState::Valid &&
+            (result.events.empty() ||
+             !std::holds_alternative<core::BookSnapshot>(result.events.front())))
+            return fail("L2 update before snapshot");
+        auto staged = book;
         for (const auto& event : result.events) {
-            if (!std::visit([&](const auto& value) { return book.apply(value); }, event))
+            if (!std::visit([&](const auto& value) { return staged.apply(value); }, event))
                 return fail("book rejected event");
         }
+        book = std::move(staged);
         return true;
     }
     bool fail(std::string_view reason) {
@@ -39,6 +60,7 @@ class CoinbaseMessagePipeline {
     std::string error;
 
   private:
+    core::SequenceTracker sequence_;
     Sink sink_;
     CoinbaseL2Parser parser_;
     bool stopped_{false};

@@ -20,11 +20,12 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
     beast::flat_buffer buffer;
     MessageHandler message;
     ErrorHandler error;
+    std::function<void()> connected;
     bool started{false}, stopping{false}, writing{false}, closing{false};
     Impl(asio::io_context& io, asio::ssl::context& ssl, MessageHandler m, ErrorHandler e,
-         std::string h, std::string p)
+         std::string h, std::string p, std::function<void()> c)
         : host(std::move(h)), port(std::move(p)), resolver(io), ws(io, ssl), message(std::move(m)),
-          error(std::move(e)) {}
+          error(std::move(e)), connected(std::move(c)) {}
     void abort_socket() {
         Error ignored;
         beast::get_lowest_layer(ws).socket().close(ignored);
@@ -91,8 +92,11 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
                                return self->fail("subscribe", ec);
                            if (index + 1 < subscriptions.size())
                                self->subscribe(index + 1);
-                           else
+                           else {
+                               if (self->connected)
+                                   self->connected();
                                self->read();
+                           }
                        });
     }
     void read() {
@@ -104,6 +108,8 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
                     self->fail("read", ec);
                 return;
             }
+            if (self->stopping)
+                return;
             using namespace std::chrono;
             const core::ReceiveWallTimestamp wall{
                 duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count()};
@@ -117,6 +123,11 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
             else
                 self->read();
         });
+    }
+    void abort() {
+        stopping = true;
+        resolver.cancel();
+        abort_socket();
     }
     void close() {
         stopping = true;
@@ -135,10 +146,11 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
 };
 CoinbaseWebSocketClient::CoinbaseWebSocketClient(asio::io_context& io, asio::ssl::context& ssl,
                                                  MessageHandler m, ErrorHandler e, std::string host,
-                                                 std::string port)
+                                                 std::string port, std::function<void()> connected)
     : impl_(std::make_shared<Impl>(io, ssl, std::move(m), std::move(e), std::move(host),
-                                   std::move(port))) {}
+                                   std::move(port), std::move(connected))) {}
 CoinbaseWebSocketClient::~CoinbaseWebSocketClient() = default;
 void CoinbaseWebSocketClient::connect() { impl_->connect(); }
 void CoinbaseWebSocketClient::close() { impl_->close(); }
+void CoinbaseWebSocketClient::abort() { impl_->abort(); }
 } // namespace adapters::coinbase

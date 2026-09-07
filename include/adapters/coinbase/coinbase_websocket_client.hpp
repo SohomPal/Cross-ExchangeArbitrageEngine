@@ -15,10 +15,12 @@ class CoinbaseWebSocketClient {
     using ErrorHandler = std::function<void(std::string_view)>;
     CoinbaseWebSocketClient(boost::asio::io_context&, boost::asio::ssl::context&, MessageHandler,
                             ErrorHandler, std::string host = "advanced-trade-ws.coinbase.com",
-                            std::string port = "443");
+                            std::string port = "443", std::function<void()> connected = {});
     ~CoinbaseWebSocketClient();
     void connect();
     void close();
+    // Cancel immediately during recovery, including an outstanding handshake/read.
+    void abort();
 
   private:
     struct Impl;

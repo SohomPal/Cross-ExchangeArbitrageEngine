@@ -82,7 +82,7 @@ const BidLevels& OrderBook::bids() const { return bids_; }
 const AskLevels& OrderBook::asks() const { return asks_; }
 
 std::optional<BookLevel> OrderBook::best_bid() const {
-    if (bids_.empty()) {
+    if (state_ != BookState::Valid || bids_.empty()) {
         return std::nullopt;
     }
     const auto& [price, quantity] = *bids_.begin();
@@ -90,7 +90,7 @@ std::optional<BookLevel> OrderBook::best_bid() const {
 }
 
 std::optional<BookLevel> OrderBook::best_ask() const {
-    if (asks_.empty()) {
+    if (state_ != BookState::Valid || asks_.empty()) {
         return std::nullopt;
     }
     const auto& [price, quantity] = *asks_.begin();
@@ -98,7 +98,7 @@ std::optional<BookLevel> OrderBook::best_ask() const {
 }
 
 bool OrderBook::has_two_sided_market() const {
-    return !bids_.empty() && !asks_.empty();
+    return state_ == BookState::Valid && !bids_.empty() && !asks_.empty();
 }
 
 std::optional<std::uint64_t> OrderBook::last_sequence() const {

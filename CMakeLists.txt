@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(arbitrage_core src/core/fixed_point.cpp src/core/order_book.cpp)
+add_library(arbitrage_core src/core/fixed_point.cpp src/core/order_book.cpp src/core/sequence_tracker.cpp)
 target_include_directories(arbitrage_core PUBLIC include)
 
 add_library(raw_recording
@@ -16,7 +16,10 @@ target_include_directories(raw_recording SYSTEM PRIVATE third_party)
 
 add_library(coinbase_adapter
     src/adapters/coinbase/coinbase_l2_parser.cpp
-    src/adapters/coinbase/coinbase_symbol_mapper.cpp)
+    src/adapters/coinbase/coinbase_symbol_mapper.cpp
+    src/adapters/coinbase/coinbase_heartbeat_parser.cpp
+    src/adapters/coinbase/coinbase_feed_health.cpp
+    src/adapters/coinbase/reconnect_policy.cpp)
 target_link_libraries(coinbase_adapter PUBLIC arbitrage_core)
 target_include_directories(coinbase_adapter SYSTEM PRIVATE third_party)
 
@@ -25,8 +28,15 @@ find_package(OpenSSL REQUIRED)
 add_library(coinbase_websocket src/adapters/coinbase/coinbase_websocket_client.cpp)
 target_link_libraries(coinbase_websocket PUBLIC arbitrage_core Boost::headers OpenSSL::SSL OpenSSL::Crypto)
 
+add_library(coinbase_recovery src/adapters/coinbase/coinbase_connection_manager.cpp)
+target_link_libraries(coinbase_recovery PUBLIC coinbase_adapter coinbase_websocket)
 add_executable(arbitrage_engine src/main.cpp)
-target_link_libraries(arbitrage_engine PRIVATE coinbase_websocket coinbase_adapter raw_recording)
+target_link_libraries(arbitrage_engine PRIVATE coinbase_recovery raw_recording)
+
+# Keep the existing executable name and provide the development command spelling.
+add_custom_command(TARGET arbitrage_engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:arbitrage_engine>
+        $<TARGET_FILE_DIR:arbitrage_engine>/cross-exchange-arbitrage)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -66,4 +76,14 @@ if(BUILD_TESTING)
         FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
     target_link_libraries(raw_event_recorder_test PRIVATE raw_recording coinbase_adapter)
     add_test(NAME raw_event_recorder_test COMMAND raw_event_recorder_test)
+endif()
+
+if(BUILD_TESTING)
+    foreach(test sequence_tracker reconnect_policy coinbase_feed_health coinbase_recovery)
+        add_executable(${test}_test tests/unit/${test}_test.cpp)
+        target_include_directories(${test}_test SYSTEM PRIVATE tests/vendor third_party)
+        target_compile_definitions(${test}_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+        target_link_libraries(${test}_test PRIVATE coinbase_recovery raw_recording)
+        add_test(NAME ${test}_test COMMAND ${test}_test)
+    endforeach()
 endif()

@@ -41,3 +41,26 @@ GitHub Actions builds and tests on Linux and macOS with compiler warnings
 treated as errors (`-Wall -Wextra -Wpedantic -Werror`). A separate formatting
 check uses clang-format 18.1.8 for the Coinbase adapter headers, sources, and
 parser tests. See [the workflow](../.github/workflows/ci.yml) for the exact checks.
+
+## Recovery fault exercise
+
+Use a new output file (the output parent directory must exist):
+
+```sh
+mkdir -p data/raw
+./build/cross-exchange-arbitrage --venue coinbase --instrument BTC-USD \
+  --output data/raw/coinbase-recovery-test \
+  --force-disconnect-after-seconds 30
+```
+
+The one-shot development fault disconnects locally after 30 seconds. Observe Valid,
+Disconnected/Resyncing, Initializing, then Valid with a larger connection ID.
+For a network outage exercise, disable and restore your network while recording;
+retries should cap at ten seconds and resume without restarting. Stop with Ctrl-C.
+The legacy `--record FILE` spelling also accepts the fault option.
+
+Recovery tests inject a monotonic clock, transport callbacks, and reconnect scheduling.
+They do not sleep for health or backoff intervals. A premature update on connection 2
+causes another recovery, so its replacement snapshot is tested on connection 3;
+accepting that snapshot on the already abandoned connection would violate fail-closed
+recovery. Each failure schedules exactly one retry.

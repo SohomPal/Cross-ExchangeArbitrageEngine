@@ -25,3 +25,5 @@ Corruption behavior: readers must report malformed JSON, missing fields, unknown
 Flush policy: the reference implementation flushes every record; implementations may buffer for performance but must accept the durability tradeoffs.
 
 Why record before parsing: recording raw messages prior to parsing ensures every processed market event has a corresponding raw evidence file for debugging, replay, and audit.
+
+Recovery appends to the same recording file. `connection_id` increments after each successful session's subscriptions are sent. Sequence baselines are per connection; never compare envelope sequences across these boundaries. All sequenced channels participate in continuity checks within a connection. Raw messages that reveal an integrity failure are recorded before rejection. Socket failures and health timer events are not raw messages and are not encoded as synthetic exchange payloads.

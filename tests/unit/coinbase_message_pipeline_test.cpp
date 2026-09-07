@@ -87,3 +87,21 @@ TEST_CASE("recorder failure prevents parsing and update before snapshot fails ap
     CHECK_FALSE(early_update.process(fixture("l2_update.json"), {1}, {2}));
     CHECK(early_update.book.state() == core::BookState::Invalid);
 }
+
+TEST_CASE("replay follows shared envelope sequences and retains snapshot gating") {
+    CoinbaseMessagePipeline pipeline{[](auto, auto, auto) { return true; }};
+    REQUIRE(pipeline.process(R"({"channel":"subscriptions","sequence_num":40})", {0}, {0}));
+    REQUIRE(
+        pipeline.process(R"({"channel":"heartbeats","sequence_num":41,"events":[{}]})", {0}, {0}));
+    CHECK_FALSE(pipeline.book.best_bid());
+    REQUIRE(pipeline.process(fixture("l2_snapshot.json"), {0}, {0}));
+    REQUIRE(pipeline.process(fixture("l2_update.json"), {0}, {0}));
+    const auto bids = pipeline.book.bids();
+    REQUIRE(pipeline.process(R"({"channel":"future","sequence_num":44})", {0}, {0}));
+    CHECK(pipeline.book.bids() == bids);
+    CHECK_FALSE(pipeline.process(R"({"channel":"subscriptions","sequence_num":46})", {0}, {0}));
+    CHECK_FALSE(pipeline.book.best_bid());
+    pipeline.reset_connection();
+    REQUIRE(pipeline.process(R"({"channel":"subscriptions","sequence_num":42})", {0}, {0}));
+    CHECK_FALSE(pipeline.process(fixture("l2_update.json"), {0}, {0}));
+}

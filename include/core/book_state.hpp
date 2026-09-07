@@ -5,6 +5,9 @@ namespace core {
 enum class BookState {
     Initializing,
     Valid,
+    Stale,
+    Resyncing,
+    Disconnected,
     Invalid
 };
 

@@ -78,7 +78,7 @@ CoinbaseL2Parser::CoinbaseL2Parser(CoinbaseSymbolMapper symbols) : symbols_(std:
 CoinbaseParseResult
 CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp receive_wall_time,
                         core::ReceiveMonotonicTimestamp receive_monotonic_time) const {
-    CoinbaseParseResult result{ParseStatus::Error, {}, {}, std::string{raw_message}};
+    CoinbaseParseResult result{ParseStatus::Error, {}, {}, std::string{raw_message}, {}};
     try {
         const auto message = json::parse(raw_message);
         if (!message.is_object())
@@ -88,17 +88,20 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
         if (message.value("type", std::string{}) == "error" ||
             message.value("channel", std::string{}) == "error")
             throw std::invalid_argument("explicit Coinbase error: " + std::string(raw_message));
-        if (message.value("channel", std::string{}) != "l2_data") {
+        const bool l2 = message.value("channel", std::string{}) == "l2_data";
+        if (l2 || message.contains("sequence_num")) {
+            const auto& sequence = message.at("sequence_num");
+            if (!sequence.is_number_unsigned() &&
+                !(sequence.is_number_integer() && sequence.get<std::int64_t>() >= 0))
+                throw std::invalid_argument("sequence_num must be a nonnegative uint64 integer");
+            result.sequence = sequence.get<std::uint64_t>();
+        }
+        if (!l2) {
             result.status = ParseStatus::Ignored;
             return result;
         }
         const auto exchange_time = parse_timestamp(string_field(message, "timestamp"));
-        const auto& sequence = message.at("sequence_num");
-        if (!sequence.is_number_unsigned() &&
-            !(sequence.is_number_integer() && sequence.get<std::int64_t>() >= 0)) {
-            throw std::invalid_argument("sequence_num must be a nonnegative uint64 integer");
-        }
-        const auto sequence_num = sequence.get<std::uint64_t>();
+        const auto sequence_num = *result.sequence;
         const auto& events = message.at("events").get_ref<const json::array_t&>();
         std::vector<core::MarketEvent> parsed;
         for (const auto& event : events) {
@@ -133,6 +136,7 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
                     receive_wall_time, receive_monotonic_time, sequence_num});
             }
         }
+        result.sequence = sequence_num;
         result.events = std::move(parsed);
         result.status = ParseStatus::Parsed;
     } catch (const json::exception& error) {
