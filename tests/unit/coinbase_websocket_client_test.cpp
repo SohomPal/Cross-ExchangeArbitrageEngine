@@ -88,7 +88,7 @@ TEST_CASE(
                                    },
                                    [&](auto error) {
                                        failure = error;
-                                       deadline.cancel();
+                                       io.stop();
                                    },
                                    "localhost",
                                    std::to_string(acceptor.local_endpoint().port())};
@@ -101,14 +101,26 @@ TEST_CASE(
     CHECK(callbacks == 1);
     CHECK(normal_close);
 }
-TEST_CASE("connection errors are surfaced once without delivering messages") {
+TEST_CASE("transport errors are surfaced once without delivering messages") {
     asio::io_context io;
     asio::ssl::context ssl{asio::ssl::context::tls_client};
-    // Bound but not listening: no external service or DNS availability required.
-    tcp::socket bound{io};
-    bound.open(tcp::v4());
-    bound.bind({asio::ip::make_address("127.0.0.1"), 0});
-    const auto port = bound.local_endpoint().port();
+    // Accept TCP, then reset it during TLS setup. A bound, non-listening port
+    // can wait for OS connect retries and is not a portable failure fixture.
+    tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
+    tcp::socket peer{io};
+    acceptor.async_accept(peer, [&](Error ec) {
+        REQUIRE_FALSE(ec);
+        peer.set_option(asio::socket_base::linger{true, 0});
+        peer.close();
+    });
+    bool timed_out = false;
+    asio::steady_timer deadline{io, std::chrono::seconds(5)};
+    deadline.async_wait([&](Error ec) {
+        if (!ec) {
+            timed_out = true;
+            io.stop();
+        }
+    });
     int errors = 0, messages = 0;
     CoinbaseWebSocketClient client{io,
                                    ssl,
@@ -118,12 +130,14 @@ TEST_CASE("connection errors are surfaced once without delivering messages") {
                                    },
                                    [&](auto error) {
                                        ++errors;
-                                       CHECK(error.find("connect:") == 0);
+                                       CHECK(error.find("TLS handshake:") == 0);
+                                       deadline.cancel();
                                    },
                                    "127.0.0.1",
-                                   std::to_string(port)};
+                                   std::to_string(acceptor.local_endpoint().port())};
     client.connect();
     io.run();
+    CHECK_FALSE(timed_out);
     CHECK(errors == 1);
     CHECK(messages == 0);
 }
