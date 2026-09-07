@@ -1,4 +1,9 @@
 /build*/
 **.key
 **.crt
+
+# Public localhost TLS fixtures required by deterministic CI tests.
+!/tests/fixtures/tls/localhost.key
+!/tests/fixtures/tls/localhost.crt
+
 /data*/
