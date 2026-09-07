@@ -10,6 +10,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libboost-dev libssl-dev
+      - if: runner.os == 'macOS'
+        run: brew install boost openssl@3
       - run: cmake -S . -B build -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
       - run: cmake --build build --parallel
       - run: ctest --test-dir build --output-on-failure
@@ -26,3 +30,5 @@ jobs:
           include/adapters/coinbase/*.hpp
           src/adapters/coinbase/*.cpp
           tests/unit/coinbase_l2_parser_test.cpp
+          tests/unit/coinbase_message_pipeline_test.cpp
+          tests/unit/coinbase_websocket_client_test.cpp

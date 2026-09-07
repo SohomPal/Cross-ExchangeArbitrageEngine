@@ -25,6 +25,7 @@ public:
     );
 
     bool flush();
+    bool close();
 
     [[nodiscard]] std::uint64_t next_record_index() const;
 

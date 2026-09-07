@@ -76,6 +76,13 @@ bool RawEventRecorder::flush() {
     return output_.good();
 }
 
+bool RawEventRecorder::close() {
+    if (!output_.is_open()) return false;
+    output_.flush();
+    output_.close();
+    return !output_.fail();
+}
+
 std::uint64_t RawEventRecorder::next_record_index() const { return next_record_index_; }
 
 } // namespace recording

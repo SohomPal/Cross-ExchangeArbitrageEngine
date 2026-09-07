@@ -19,6 +19,7 @@ public:
     // (side, price) entries; updates process repeated entries in event order.
     bool apply(const BookSnapshot& snapshot);
     bool apply(const BookUpdate& update);
+    void invalidate() { state_ = BookState::Invalid; }
 
     [[nodiscard]] Venue venue() const;
     [[nodiscard]] Instrument instrument() const;

@@ -20,11 +20,28 @@ add_library(coinbase_adapter
 target_link_libraries(coinbase_adapter PUBLIC arbitrage_core)
 target_include_directories(coinbase_adapter SYSTEM PRIVATE third_party)
 
+find_package(Boost CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
+add_library(coinbase_websocket src/adapters/coinbase/coinbase_websocket_client.cpp)
+target_link_libraries(coinbase_websocket PUBLIC arbitrage_core Boost::headers OpenSSL::SSL OpenSSL::Crypto)
+
 add_executable(arbitrage_engine src/main.cpp)
-target_link_libraries(arbitrage_engine PRIVATE arbitrage_core)
+target_link_libraries(arbitrage_engine PRIVATE coinbase_websocket coinbase_adapter raw_recording)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(coinbase_message_pipeline_test tests/unit/coinbase_message_pipeline_test.cpp)
+    target_include_directories(coinbase_message_pipeline_test SYSTEM PRIVATE tests/vendor third_party)
+    target_compile_definitions(coinbase_message_pipeline_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+    target_link_libraries(coinbase_message_pipeline_test PRIVATE coinbase_adapter raw_recording)
+    add_test(NAME coinbase_message_pipeline_test COMMAND coinbase_message_pipeline_test)
+    add_executable(coinbase_websocket_client_test tests/unit/coinbase_websocket_client_test.cpp)
+    target_include_directories(coinbase_websocket_client_test SYSTEM PRIVATE tests/vendor)
+    target_compile_definitions(coinbase_websocket_client_test PRIVATE TLS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/tls")
+    target_link_libraries(coinbase_websocket_client_test PRIVATE coinbase_websocket)
+    add_test(NAME coinbase_websocket_client_test COMMAND coinbase_websocket_client_test)
+    set_tests_properties(coinbase_websocket_client_test PROPERTIES TIMEOUT 15)
+
     add_executable(coinbase_l2_parser_test tests/unit/coinbase_l2_parser_test.cpp)
     target_include_directories(coinbase_l2_parser_test SYSTEM PRIVATE tests/vendor third_party)
     target_compile_definitions(coinbase_l2_parser_test PRIVATE

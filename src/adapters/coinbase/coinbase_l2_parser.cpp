@@ -81,7 +81,14 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
     CoinbaseParseResult result{ParseStatus::Error, {}, {}, std::string{raw_message}};
     try {
         const auto message = json::parse(raw_message);
-        if (string_field(message, "channel") != "l2_data") {
+        if (!message.is_object())
+            throw std::invalid_argument("expected message object");
+        if (!message.contains("channel") && !message.contains("type"))
+            throw std::invalid_argument("message requires channel or type");
+        if (message.value("type", std::string{}) == "error" ||
+            message.value("channel", std::string{}) == "error")
+            throw std::invalid_argument("explicit Coinbase error: " + std::string(raw_message));
+        if (message.value("channel", std::string{}) != "l2_data") {
             result.status = ParseStatus::Ignored;
             return result;
         }

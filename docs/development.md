@@ -5,7 +5,11 @@
 - CMake 3.20 or newer.
 - A C++20 compiler.
 
-Dependencies are vendored, so configuration and builds require no network access.
+- Boost development headers and OpenSSL development libraries.
+
+Install system dependencies with `brew install boost openssl@3` on macOS or
+`sudo apt-get install libboost-dev libssl-dev` on Ubuntu. JSON and test libraries
+are vendored. Once dependencies are installed, builds and tests need no internet.
 
 ## Build and test
 
@@ -15,17 +19,14 @@ Run from the repository root:
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/arbitrage_engine
+./build/arbitrage_engine --record data/session.jsonl
 ```
 
-The executable currently demonstrates fixed-point parsing and prints:
-
-```text
-Price ticks: 6214327
-Quantity atoms: 125000
-```
-
-It does not start a market data feed or execute trades.
+Stop with Ctrl-C and run `./build/arbitrage_engine --replay data/session.jsonl`
+to reconstruct the final book offline. The live command requires network access;
+it is never run in CI. Tests use fixtures and a local TLS WebSocket peer. The
+committed localhost key is a public test-only key and must never be used elsewhere.
+TLS verification remains enabled in tests and production.
 
 ## Dependencies
 
