@@ -77,18 +77,28 @@ CoinbaseL2Parser::CoinbaseL2Parser(CoinbaseSymbolMapper symbols) : symbols_(std:
 
 CoinbaseParseResult
 CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp receive_wall_time,
-                        core::ReceiveMonotonicTimestamp receive_monotonic_time) const {
-    CoinbaseParseResult result{ParseStatus::Error, {}, {}, std::string{raw_message}, {}};
+                        core::ReceiveMonotonicTimestamp receive_monotonic_time,
+                        core::StageTimings* timings, bool retain_raw_message) const {
+    CoinbaseParseResult result{ParseStatus::Error, {}, {}, retain_raw_message ? std::string{raw_message} : std::string{}, {}};
+    const auto prior_conversion = timings ? timings->fixed_point_ns : 0;
+    const auto prior_construction = timings ? timings->canonical_event_ns : 0;
     try {
+        core::StageTimer decoding(timings ? &timings->json_parse_ns : nullptr);
         const auto message = json::parse(raw_message);
+        decoding.stop();
+        core::StageTimer normalization(timings ? &timings->schema_validation_ns : nullptr);
         if (!message.is_object())
             throw std::invalid_argument("expected message object");
         if (!message.contains("channel") && !message.contains("type"))
             throw std::invalid_argument("message requires channel or type");
-        if (message.value("type", std::string{}) == "error" ||
-            message.value("channel", std::string{}) == "error")
+        const std::string_view channel = message.contains("channel")
+            ? std::string_view{string_field(message, "channel")} : std::string_view{};
+        const std::string_view type = message.contains("type")
+            ? std::string_view{string_field(message, "type")} : std::string_view{};
+        if (type == "error" || channel == "error")
             throw std::invalid_argument("explicit Coinbase error: " + std::string(raw_message));
-        const bool l2 = message.value("channel", std::string{}) == "l2_data";
+        const bool l2 = channel == "l2_data";
+        result.heartbeat_channel = channel == "heartbeats";
         if (l2 || message.contains("sequence_num")) {
             const auto& sequence = message.at("sequence_num");
             if (!sequence.is_number_unsigned() &&
@@ -98,12 +108,14 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
         }
         if (!l2) {
             result.status = ParseStatus::Ignored;
+            normalization.stop();
             return result;
         }
         const auto exchange_time = parse_timestamp(string_field(message, "timestamp"));
         const auto sequence_num = *result.sequence;
         const auto& events = message.at("events").get_ref<const json::array_t&>();
         std::vector<core::MarketEvent> parsed;
+        parsed.reserve(events.size());
         for (const auto& event : events) {
             const auto& type = string_field(event, "type");
             if (type != "snapshot" && type != "update") {
@@ -113,19 +125,23 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
             if (!config) {
                 throw std::invalid_argument("unsupported Coinbase product");
             }
+            const auto& updates = event.at("updates").get_ref<const json::array_t&>();
             std::vector<core::BookLevel> levels;
-            for (const auto& update : event.at("updates").get_ref<const json::array_t&>()) {
+            levels.reserve(updates.size());
+            for (const auto& update : updates) {
                 const auto& side = string_field(update, "side");
                 if (side != "bid" && side != "offer") {
                     throw std::invalid_argument("unknown Coinbase L2 side");
                 }
                 (void)parse_timestamp(string_field(update, "event_time"));
-                levels.push_back(
-                    {side == "bid" ? core::Side::Bid : core::Side::Ask,
-                     core::parse_price(string_field(update, "price_level"), config->price_scale),
-                     core::parse_quantity(string_field(update, "new_quantity"),
-                                          config->quantity_scale)});
+                core::StageTimer conversion(timings ? &timings->fixed_point_ns : nullptr);
+                const auto price = core::parse_price(string_field(update, "price_level"), config->price_scale);
+                const auto quantity = core::parse_quantity(string_field(update, "new_quantity"), config->quantity_scale);
+                conversion.stop();
+                core::StageTimer construction(timings ? &timings->canonical_event_ns : nullptr);
+                levels.push_back({side == "bid" ? core::Side::Bid : core::Side::Ask, price, quantity});
             }
+            core::StageTimer construction(timings ? &timings->canonical_event_ns : nullptr);
             if (type == "snapshot") {
                 parsed.emplace_back(core::BookSnapshot{
                     core::Venue::Coinbase, config->instrument, std::move(levels), exchange_time,
@@ -146,6 +162,9 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
     } catch (const std::overflow_error& error) {
         result.error = error.what();
     }
+    if (timings)
+        timings->schema_validation_ns -= (timings->fixed_point_ns - prior_conversion) +
+                                         (timings->canonical_event_ns - prior_construction);
     return result;
 }
 

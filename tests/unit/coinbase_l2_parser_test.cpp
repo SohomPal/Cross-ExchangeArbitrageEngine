@@ -203,3 +203,26 @@ TEST_CASE("product configuration supplies precision and values remain exact beyo
                         CoinbaseSymbolMapper::Products{{"BTC-USD", {Instrument::BTC_USD, 19, 8}}}),
                     std::invalid_argument);
 }
+
+TEST_CASE("Envelope owner can omit raw copy while retaining canonical events") {
+    const auto raw = fixture("l2_update");
+    CoinbaseL2Parser parser;
+    const auto owned = parser.parse(raw, {1}, {2});
+    core::StageTimings timings;
+    const auto borrowed = parser.parse(raw, {1}, {2}, &timings, false);
+    CHECK(borrowed.status == owned.status);
+    CHECK(borrowed.events == owned.events);
+    CHECK(borrowed.sequence == owned.sequence);
+    CHECK(borrowed.raw_message.empty());
+    CHECK(owned.raw_message == raw);
+    CHECK(timings.json_parse_ns > 0);
+    CHECK(timings.fixed_point_ns > 0);
+    const auto first_schema = timings.schema_validation_ns;
+    const auto begin = std::chrono::steady_clock::now();
+    const auto again = parser.parse(raw, {1}, {2}, &timings, false);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - begin).count();
+    CHECK(again.events == owned.events);
+    CHECK(timings.schema_validation_ns >= first_schema);
+    CHECK(timings.schema_validation_ns - first_schema <= elapsed);
+}

@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <map>
+#include <span>
 
 namespace core {
 
@@ -19,6 +20,7 @@ public:
     // (side, price) entries; updates process repeated entries in event order.
     bool apply(const BookSnapshot& snapshot);
     bool apply(const BookUpdate& update);
+    bool apply(std::span<const MarketEvent> events);
     void mark_initializing() { state_ = BookState::Initializing; }
     void mark_stale() { state_ = BookState::Stale; }
     void mark_resyncing() { state_ = BookState::Resyncing; }

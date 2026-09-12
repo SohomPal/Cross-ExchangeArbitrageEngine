@@ -20,6 +20,7 @@ struct RuntimeStatus {
     core::BookState book_state{core::BookState::Initializing};
     std::uint64_t received_messages{0}, enqueued_messages{0}, written_messages{0},
         processed_messages{0};
+    std::size_t bid_levels{0}, ask_levels{0};
     std::size_t recording_queue_messages{0}, recording_queue_bytes{0};
     std::optional<std::uint64_t> last_sequence;
     std::optional<core::PriceTicks> best_bid, best_ask;

@@ -30,7 +30,10 @@ ProcessResult CoinbaseMessageHandler::handle(std::string payload, core::ReceiveW
     try {
         auto envelope = std::make_shared<const recording::RawEnvelope>(recording::RawEnvelope{
             index, core::Venue::Coinbase, connection_id, wall, mono, std::move(payload)});
+        std::uint64_t enqueue_ns = 0;
+        core::StageTimer enqueue(profile_stages ? &enqueue_ns : nullptr);
         auto pushed = sink_(envelope);
+        enqueue.stop();
         if (pushed != recording::RawRecordingQueue::PushResult::Accepted) {
             book_.invalidate();
             result.outcome = MessageOutcome::RecordingRejected;
@@ -42,6 +45,7 @@ ProcessResult CoinbaseMessageHandler::handle(std::string payload, core::ReceiveW
             result = process(*envelope);
             progress.last_processed_index = index;
         }
+        result.stages.enqueue_ns = enqueue_ns;
     } catch (const std::exception& e) {
         book_.invalidate();
         result.outcome = progress.last_enqueued_index == index ? MessageOutcome::ApplyError
@@ -50,8 +54,11 @@ ProcessResult CoinbaseMessageHandler::handle(std::string payload, core::ReceiveW
             progress.last_processed_index = index;
         result.error = e.what();
     }
-    if (publish_)
-        publish_(result, progress);
+    {
+        core::StageTimer publication(profile_stages ? &result.stages.status_publish_ns : nullptr);
+        if (publish_)
+            publish_(result, progress);
+    }
     return result;
 }
 ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& envelope) {
@@ -64,31 +71,50 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
     };
     health_.last_any_message = envelope.receive_monotonic_time;
     const auto parsed = parser_.parse(envelope.payload, envelope.receive_wall_time,
-                                      envelope.receive_monotonic_time);
+                                      envelope.receive_monotonic_time,
+                                      profile_stages ? &result.stages : nullptr, false);
     if (parsed.status == ParseStatus::Error)
         return fail(MessageOutcome::ParseError, parsed.error);
     result.canonical_event_count = parsed.events.size();
+    for (const auto& event : parsed.events) {
+        if (const auto* snapshot = std::get_if<core::BookSnapshot>(&event)) {
+            result.contains_snapshot = true;
+            result.number_of_changes += snapshot->levels.size();
+        } else {
+            result.number_of_changes += std::get<core::BookUpdate>(event).changes.size();
+        }
+    }
+    core::StageTimer sequence_timer(profile_stages ? &result.stages.sequence_validation_ns : nullptr);
     if (parsed.sequence) {
         switch (sequence_.observe(*parsed.sequence)) {
         case core::SequenceResult::Duplicate:
+            sequence_timer.stop();
             ++health_.duplicate_sequences;
             result.outcome = MessageOutcome::Duplicate;
             return result;
         case core::SequenceResult::OutOfOrder:
+            sequence_timer.stop();
             ++health_.out_of_order_sequences;
             result.outcome = MessageOutcome::OutOfOrder;
             return result;
         case core::SequenceResult::Gap:
+            sequence_timer.stop();
             ++health_.sequence_gaps;
             return fail(MessageOutcome::SequenceGap, "Coinbase envelope sequence gap");
         default:
             break;
         }
     }
-    if (auto heartbeat = parse_heartbeat(envelope.payload, envelope.receive_wall_time,
-                                         envelope.receive_monotonic_time)) {
-        health_.last_heartbeat = heartbeat->receive_monotonic_time;
-        ++health_.heartbeat_count;
+    sequence_timer.stop();
+    if (parsed.heartbeat_channel) {
+        core::StageTimer heartbeat_timer(profile_stages ? &result.stages.json_parse_ns : nullptr);
+        const auto heartbeat = parse_heartbeat(envelope.payload, envelope.receive_wall_time,
+                                                envelope.receive_monotonic_time);
+        heartbeat_timer.stop();
+        if (heartbeat) {
+            health_.last_heartbeat = heartbeat->receive_monotonic_time;
+            ++health_.heartbeat_count;
+        }
         return result;
     }
     if (parsed.status == ParseStatus::Ignored)
@@ -100,19 +126,18 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
         return fail(MessageOutcome::ApplyError, "L2 update before snapshot");
     if (parsed.events.empty())
         return result;
-    auto staged = book_;
+    core::StageTimer application(profile_stages ? &result.stages.book_apply_ns : nullptr);
+    if (!book_.apply(parsed.events)) {
+        application.stop();
+        return fail(MessageOutcome::ApplyError, "book rejected event");
+    }
     for (const auto& event : parsed.events) {
-        if (std::holds_alternative<core::BookUpdate>(event) &&
-            staged.state() != core::BookState::Valid)
-            return fail(MessageOutcome::ApplyError, "L2 update before snapshot");
-        if (!std::visit([&](const auto& e) { return staged.apply(e); }, event))
-            return fail(MessageOutcome::ApplyError, "book rejected event");
         if (std::holds_alternative<core::BookSnapshot>(event))
             ++result.snapshots;
         else
             ++result.updates;
     }
-    book_ = std::move(staged);
+    application.stop();
     // Capture only after the entire transaction has installed levels, sequence and state.
     const auto updated = std::chrono::steady_clock::now();
     result.latency =

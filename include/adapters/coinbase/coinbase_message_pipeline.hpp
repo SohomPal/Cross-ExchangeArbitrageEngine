@@ -41,12 +41,8 @@ class CoinbaseMessagePipeline {
             (result.events.empty() ||
              !std::holds_alternative<core::BookSnapshot>(result.events.front())))
             return fail("L2 update before snapshot");
-        auto staged = book;
-        for (const auto& event : result.events) {
-            if (!std::visit([&](const auto& value) { return staged.apply(value); }, event))
-                return fail("book rejected event");
-        }
-        book = std::move(staged);
+        if (!book.apply(result.events))
+            return fail("book rejected event");
         return true;
     }
     bool fail(std::string_view reason) {

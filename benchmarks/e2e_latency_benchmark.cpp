@@ -4,6 +4,7 @@
 #include "pipeline/joining_thread.hpp"
 #include "pipeline/runtime_status.hpp"
 #include "recording/raw_event_reader.hpp"
+#include <array>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -54,7 +55,7 @@ json stats_json(const std::vector<std::int64_t>& values) {
 template <class T> json optional_json(const std::optional<T>& value) {
     return value ? json(*value) : json(nullptr);
 }
-json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueConfig config) {
+json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueConfig config, bool profile_stages) {
     TemporaryDirectory directory;
     auto output = directory.path / "raw.jsonl";
     recording::RawRecordingQueue queue{config};
@@ -89,20 +90,35 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                         s.progress.last_enqueued_index = progress.last_enqueued_index;
                         s.progress.last_processed_index = progress.last_processed_index;
                         s.book_state = book.state();
+                        s.bid_levels = book.bids().size();
+                        s.ask_levels = book.asks().size();
                         s.last_sequence = sequence.last();
                         auto bid = book.best_bid(), ask = book.best_ask();
                         s.best_bid = bid ? std::optional{bid->price} : std::nullopt;
                         s.best_ask = ask ? std::optional{ask->price} : std::nullopt;
                     }};
+                handler.profile_stages = profile_stages;
                 std::vector<std::int64_t> snapshots, updates, all;
                 snapshots.reserve(data.size());
                 updates.reserve(data.size());
                 all.reserve(data.size());
+                std::vector<benchmarks::LatencySample> samples;
+                samples.reserve(data.size());
+                struct Metadata {
+                    std::uint64_t index;
+                    std::size_t bytes, changes;
+                    bool snapshot, l2;
+                    MessageOutcome outcome;
+                    std::optional<std::chrono::nanoseconds> latency;
+                    core::StageTimings stages;
+                };
+                std::vector<Metadata> metadata;
+                metadata.reserve(data.size());
                 json outcomes = json::object();
                 for (int i = 0; i <= static_cast<int>(MessageOutcome::ApplyError); ++i)
                     outcomes[outcome_name(static_cast<MessageOutcome>(i))] = 0;
                 std::optional<std::uint64_t> connection;
-                auto start = std::chrono::steady_clock::now();
+                std::chrono::nanoseconds handler_time{0};
                 for (const auto& raw : data) {
                     if (!connection || *connection != raw.connection_id) {
                         connection = raw.connection_id;
@@ -113,28 +129,37 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                     }
                     // Dataset copying is outside the measured interval; ownership is then moved.
                     std::string payload = raw.payload;
-                    const core::ReceiveMonotonicTimestamp mono{
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch())
-                            .count()};
                     const core::ReceiveWallTimestamp wall{
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::system_clock::now().time_since_epoch())
                             .count()};
+                    const core::ReceiveMonotonicTimestamp mono{
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count()};
                     auto processed = handler.handle(std::move(payload), wall, mono);
+                    handler_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()) -
+                        std::chrono::nanoseconds{mono.nanoseconds};
+                    metadata.push_back({raw.record_index, raw.payload.size(),
+                                        processed.number_of_changes, processed.contains_snapshot,
+                                        processed.canonical_event_count != 0,
+                                        processed.outcome, processed.latency, processed.stages});
                     auto name = outcome_name(processed.outcome);
                     outcomes[name] = outcomes[name].get<std::uint64_t>() + 1;
                     if (processed.outcome == MessageOutcome::RecordingRejected)
                         throw std::runtime_error(processed.error);
                     if (processed.latency) {
                         benchmarks::LatencySample sample{processed.latency->count(),
-                                                         processed.snapshots != 0};
+                                                         processed.snapshots != 0,
+                                                         raw.record_index, raw.payload.size(),
+                                                         processed.number_of_changes};
+                        samples.push_back(sample);
                         all.push_back(sample.nanoseconds);
                         (sample.snapshot ? snapshots : updates).push_back(sample.nanoseconds);
                     }
                 }
-                auto elapsed =
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                const auto elapsed = std::chrono::duration<double>(handler_time).count();
                 queue.close();
                 {
                     std::unique_lock lock(shared.mutex);
@@ -144,6 +169,62 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                         throw std::runtime_error(*shared.status.fatal_error);
                     }
                 }
+                std::array<std::vector<std::int64_t>, 6> buckets;
+                std::uint64_t levels = 0;
+                long double total_latency = 0;
+                std::size_t largest_payload = 0, largest_changes = 0;
+                std::optional<std::uint64_t> max_index;
+                std::int64_t max_latency = -1;
+                json records = json::array();
+                json stage_statistics;
+                const std::array stage_fields{
+                    std::pair{"enqueue_ns", &core::StageTimings::enqueue_ns},
+                    std::pair{"json_parse_ns", &core::StageTimings::json_parse_ns},
+                    std::pair{"schema_validation_ns", &core::StageTimings::schema_validation_ns},
+                    std::pair{"fixed_point_ns", &core::StageTimings::fixed_point_ns},
+                    std::pair{"canonical_event_ns", &core::StageTimings::canonical_event_ns},
+                    std::pair{"sequence_validation_ns", &core::StageTimings::sequence_validation_ns},
+                    std::pair{"book_apply_ns", &core::StageTimings::book_apply_ns},
+                    std::pair{"status_publish_ns", &core::StageTimings::status_publish_ns}};
+                for (const auto& m : metadata) {
+                    largest_payload = std::max(largest_payload, m.bytes);
+                    largest_changes = std::max(largest_changes, m.changes);
+                    records.push_back({{"record_index", m.index}, {"payload_bytes", m.bytes},
+                                       {"number_of_changes", m.changes},
+                                       {"snapshot_or_update", m.snapshot ? "snapshot" :
+                                            (m.l2 ? "update" : "unsampled")},
+                                       {"outcome", outcome_name(m.outcome)},
+                                       {"latency_ns", m.latency ? json(m.latency->count()) : json(nullptr)}});
+                }
+                if (profile_stages) {
+                    for (auto [name, member] : stage_fields) {
+                        std::vector<std::int64_t> durations;
+                        for (std::size_t i = 0; i < metadata.size(); ++i) {
+                            const auto duration = metadata[i].stages.*member;
+                            records[i]["stages"][name] = duration;
+                            durations.push_back(duration);
+                        }
+                        stage_statistics[name] = stats_json(durations);
+                    }
+                }
+                for (const auto& sample : samples) {
+                    levels += sample.number_of_changes;
+                    total_latency += sample.nanoseconds;
+                    if (sample.nanoseconds > max_latency) {
+                        max_latency = sample.nanoseconds;
+                        max_index = sample.record_index;
+                    }
+                    if (!sample.snapshot) {
+                        auto n = sample.number_of_changes;
+                        const auto bucket = n == 0 ? 0 : n == 1 ? 1 : n <= 5 ? 2 :
+                                            n <= 20 ? 3 : n <= 100 ? 4 : 5;
+                        buckets[bucket].push_back(sample.nanoseconds);
+                    }
+                }
+                json bucket_stats;
+                const std::array names{"0", "1", "2-5", "6-20", "21-100", "101+"};
+                for (std::size_t i = 0; i < buckets.size(); ++i)
+                    bucket_stats[names[i]] = stats_json(buckets[i]);
                 json contents = {{"bids", json::array()},
                                  {"asks", json::array()},
                                  {"state", static_cast<int>(book.state())},
@@ -164,7 +245,17 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                           {"failed", outcomes["ParseError"].get<std::size_t>() +
                                          outcomes["SequenceGap"].get<std::size_t>() +
                                          outcomes["ApplyError"].get<std::size_t>()},
+                          {"handler_elapsed_ns", handler_time.count()},
                           {"messages_per_second", data.size() / elapsed},
+                          {"levels_processed", levels},
+                          {"levels_per_second", levels / elapsed},
+                          {"nanoseconds_per_changed_level", levels ? double(total_latency / levels) : 0.0},
+                          {"largest_payload_bytes", largest_payload},
+                          {"largest_change_count", largest_changes},
+                          {"maximum_latency_record_index", optional_json(max_index)},
+                          {"update_size_latency", bucket_stats},
+                          {"records", records},
+                          {"stage_latency", stage_statistics},
                           {"snapshot_latency", stats_json(snapshots)},
                           {"update_latency", stats_json(updates)},
                           {"all_book_latency", stats_json(all)},
@@ -216,7 +307,16 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
     return result;
 }
 json identity(json result) {
-    result.erase("messages_per_second");
+    for (const auto* key : {"messages_per_second", "handler_elapsed_ns", "levels_per_second",
+                            "nanoseconds_per_changed_level", "maximum_latency_record_index"})
+        result.erase(key);
+    result.erase("stage_latency");
+    for (auto& record : result["records"]) {
+        record.erase("latency_ns");
+        record.erase("stages");
+    }
+    for (auto& bucket : result["update_size_latency"])
+        bucket = {{"samples", bucket["samples"]}};
     for (auto category : {"snapshot_latency", "update_latency", "all_book_latency"}) {
         auto samples = result[category]["samples"];
         result[category] = {{"samples", samples}};
@@ -238,6 +338,7 @@ int main(int argc, char** argv) {
         std::string input, output;
         std::size_t trials = 5, warmups = 1;
         recording::RawQueueConfig config;
+        bool profile_stages = false;
         for (int i = 1; i < argc; i += 2) {
             if (i + 1 == argc)
                 throw std::invalid_argument("option requires a value");
@@ -250,6 +351,11 @@ int main(int argc, char** argv) {
                 trials = positive(value);
             else if (option == "--warmup-trials")
                 warmups = positive(value);
+            else if (option == "--profile-stages") {
+                if (value != "on" && value != "off")
+                    throw std::invalid_argument("--profile-stages expects on or off");
+                profile_stages = value == "on";
+            }
             else if (option == "--queue-messages")
                 config.maximum_messages = positive(value);
             else if (option == "--queue-bytes")
@@ -283,13 +389,14 @@ int main(int argc, char** argv) {
                        {"build_type", BENCHMARK_BUILD_TYPE},
                        {"platform", BENCHMARK_PLATFORM},
                        {"warmup_trials", warmups},
+                       {"profile_stages", profile_stages},
                        {"queue_maximum_messages", config.maximum_messages},
                        {"queue_maximum_bytes", config.maximum_bytes},
                        {"percentile_rule", "nearest rank: ceil(percentile * sample_count) - 1"},
                        {"trials", json::array()}};
         json expected;
         for (std::size_t i = 0; i < warmups + trials; ++i) {
-            auto result = trial(data, config);
+            auto result = trial(data, config, profile_stages);
             const auto stable = identity(result);
             if (i == 0)
                 expected = stable;

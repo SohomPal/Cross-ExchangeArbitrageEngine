@@ -9,12 +9,35 @@ bool valid_level(const BookLevel& level, bool snapshot) {
            (snapshot ? level.quantity.raw() > 0 : level.quantity.raw() >= 0);
 }
 
+// Stage only touched prices, including zero-quantity tombstones. All allocations
+// precede commit; node transfer uses equal allocators and nonthrowing comparisons.
+bool stage_update(const BookUpdate& update, Venue venue, Instrument instrument,
+                  BidLevels& bids, AskLevels& asks) {
+    if (update.venue != venue || update.instrument != instrument)
+        return false;
+    for (const auto& change : update.changes) {
+        if (!valid_level(change, false))
+            return false;
+        if (change.side == Side::Bid)
+            bids.insert_or_assign(change.price, change.quantity);
+        else
+            asks.insert_or_assign(change.price, change.quantity);
+    }
+    return true;
+}
 template <typename Levels>
-void apply_change(Levels& levels, const BookLevel& change) {
-    if (change.quantity.raw() == 0) {
-        levels.erase(change.price);
-    } else {
-        levels.insert_or_assign(change.price, change.quantity);
+void commit_changes(Levels& levels, Levels& changes) {
+    while (!changes.empty()) {
+        auto node = changes.extract(changes.begin());
+        const auto found = levels.find(node.key());
+        if (node.mapped().raw() == 0) {
+            if (found != levels.end())
+                levels.erase(found);
+        } else if (found != levels.end()) {
+            found->second = node.mapped();
+        } else {
+            levels.insert(std::move(node));
+        }
     }
 }
 
@@ -50,28 +73,41 @@ bool OrderBook::apply(const BookSnapshot& snapshot) {
 }
 
 bool OrderBook::apply(const BookUpdate& update) {
-    if (state_ != BookState::Valid || update.venue != venue_ ||
-        update.instrument != instrument_) {
+    BidLevels bids;
+    AskLevels asks;
+    if (state_ != BookState::Valid ||
+        !stage_update(update, venue_, instrument_, bids, asks))
         return false;
-    }
-
-    // Stage the entire batch, including allocations, before committing it.
-    auto new_bids = bids_;
-    auto new_asks = asks_;
-    for (const auto& change : update.changes) {
-        if (!valid_level(change, false)) {
-            return false;
-        }
-        if (change.side == Side::Bid) {
-            apply_change(new_bids, change);
-        } else {
-            apply_change(new_asks, change);
-        }
-    }
-
-    bids_.swap(new_bids);
-    asks_.swap(new_asks);
+    commit_changes(bids_, bids);
+    commit_changes(asks_, asks);
     last_sequence_ = update.sequence;
+    return true;
+}
+
+bool OrderBook::apply(std::span<const MarketEvent> events) {
+    if (events.empty())
+        return true;
+    for (const auto& event : events) {
+        if (std::holds_alternative<BookSnapshot>(event)) {
+            // Snapshot envelopes are rare and retain transactional replacement.
+            auto staged = *this;
+            for (const auto& value : events)
+                if (!std::visit([&](const auto& e) { return staged.apply(e); }, value))
+                    return false;
+            *this = std::move(staged);
+            return true;
+        }
+    }
+    if (state_ != BookState::Valid)
+        return false;
+    BidLevels bids;
+    AskLevels asks;
+    for (const auto& event : events)
+        if (!stage_update(std::get<BookUpdate>(event), venue_, instrument_, bids, asks))
+            return false;
+    commit_changes(bids_, bids);
+    commit_changes(asks_, asks);
+    last_sequence_ = std::get<BookUpdate>(events.back()).sequence;
     return true;
 }
 

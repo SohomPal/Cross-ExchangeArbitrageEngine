@@ -120,6 +120,8 @@ int run_live(const std::filesystem::path& path, int force_seconds, recording::Ra
                         auto& s = shared.status;
                         s.connected = manager.connected();
                         s.book_state = book.state();
+                        s.bid_levels = book.bids().size();
+                        s.ask_levels = book.asks().size();
                         s.last_sequence = manager.sequence();
                         s.best_bid = bid ? std::optional{bid->price} : std::nullopt;
                         s.best_ask = ask ? std::optional{ask->price} : std::nullopt;
@@ -147,6 +149,8 @@ int run_live(const std::filesystem::path& path, int force_seconds, recording::Ra
                     auto& s = shared.status;
                     s.connected = manager.connected();
                     s.book_state = b.state();
+                    s.bid_levels = b.bids().size();
+                    s.ask_levels = b.asks().size();
                     s.last_sequence = manager.sequence();
                     s.best_bid = bid ? std::optional{bid->price} : std::nullopt;
                     s.best_ask = ask ? std::optional{ask->price} : std::nullopt;

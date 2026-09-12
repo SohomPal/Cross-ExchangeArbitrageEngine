@@ -190,3 +190,27 @@ TEST_CASE("Invalid first snapshot leaves book initializing") {
     REQUIRE(book.apply(snapshot()));
     CHECK(book.state() == BookState::Valid);
 }
+
+TEST_CASE("Incremental envelopes commit only touched prices and reject atomically") {
+    OrderBook book{Venue::Coinbase, Instrument::BTC_USD};
+    REQUIRE(book.apply(snapshot()));
+    const auto* untouched = &*book.bids().find(PriceTicks{99});
+    std::vector<MarketEvent> events{
+        update({level(Side::Bid, 100, 0), level(Side::Ask, 103, 2)}),
+        update({level(Side::Bid, 100, 8), level(Side::Ask, 103, 0)})};
+    REQUIRE(book.apply(events));
+    CHECK(book.best_bid()->quantity == QuantityAtoms{8});
+    CHECK(book.asks().count(PriceTicks{103}) == 0);
+    CHECK(&*book.bids().find(PriceTicks{99}) == untouched);
+    auto before = book;
+    events.push_back(update({level(Side::Bid, 0, 1)}));
+    CHECK_FALSE(book.apply(events));
+    CHECK(book.bids() == before.bids());
+    CHECK(book.asks() == before.asks());
+    CHECK(book.last_sequence() == before.last_sequence());
+    events = {update({level(Side::Bid, 100, 1)}), snapshot()};
+    std::get<BookSnapshot>(events.back()).levels.push_back(level(Side::Bid, 99, 9));
+    CHECK_FALSE(book.apply(events));
+    CHECK(book.bids() == before.bids());
+    CHECK(book.asks() == before.asks());
+}

@@ -20,8 +20,11 @@ enum class MessageOutcome {
 };
 const char* outcome_name(MessageOutcome outcome);
 struct ProcessResult {
+    core::StageTimings stages;
     MessageOutcome outcome{MessageOutcome::Ignored};
     std::size_t canonical_event_count{0};
+    std::size_t number_of_changes{0};
+    bool contains_snapshot{false};
     std::optional<std::chrono::nanoseconds> latency;
     std::size_t snapshots{0}, updates{0};
     std::string error;
@@ -41,6 +44,7 @@ class CoinbaseMessageHandler {
           publish_(std::move(publish)) {}
     ProcessResult handle(std::string payload, core::ReceiveWallTimestamp wall,
                          core::ReceiveMonotonicTimestamp mono);
+    bool profile_stages{false};
     std::uint64_t connection_id{0};
     RuntimeProgress progress;
 
