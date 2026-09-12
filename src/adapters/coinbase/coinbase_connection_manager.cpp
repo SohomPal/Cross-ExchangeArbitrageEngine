@@ -5,10 +5,21 @@ namespace adapters::coinbase {
 CoinbaseConnectionManager::CoinbaseConnectionManager(boost::asio::io_context& io, Sink sink,
                                                      Connect connect, std::function<void()> close,
                                                      Clock clock, FeedHealthConfig config,
-                                                     Schedule schedule)
+                                                     Schedule schedule,
+                                                     CoinbaseMessageHandler::Sink envelope_sink,
+                                                     CoinbaseMessageHandler::Publish publish)
     : schedule_(std::move(schedule)), sink_(std::move(sink)), connect_(std::move(connect)),
       close_(std::move(close)), clock_(std::move(clock)), config_(config), health_timer_(io),
-      reconnect_timer_(io) {
+      reconnect_timer_(io),
+      handler_(book_, sequence_, health_,
+               envelope_sink ? std::move(envelope_sink)
+                             : CoinbaseMessageHandler::Sink{[this](auto e) {
+                                   return sink_(e->connection_id, e->payload, e->receive_wall_time,
+                                                e->receive_monotonic_time)
+                                              ? recording::RawRecordingQueue::PushResult::Accepted
+                                              : recording::RawRecordingQueue::PushResult::Closed;
+                               }},
+               std::move(publish)) {
     if (config.check_interval.count() <= 0 || config.max_any_message_age.count() <= 0 ||
         config.max_heartbeat_age.count() <= 0 ||
         (config.max_instrument_message_age && config.max_instrument_message_age->count() <= 0))
@@ -20,16 +31,19 @@ CoinbaseConnectionManager::~CoinbaseConnectionManager() {
     stop();
     lifetime_.reset();
 }
-void CoinbaseConnectionManager::transition(core::BookState state) {
+void CoinbaseConnectionManager::account_time(core::BookState state) {
     auto now = clock_();
     auto duration = std::chrono::nanoseconds{now.nanoseconds - state_since_.nanoseconds};
-    if (book_.state() == core::BookState::Valid)
+    if (state == core::BookState::Valid)
         metrics_.valid_time += duration;
-    if (book_.state() == core::BookState::Stale)
+    if (state == core::BookState::Stale)
         metrics_.stale_time += duration;
-    if (book_.state() == core::BookState::Invalid)
+    if (state == core::BookState::Invalid)
         metrics_.invalid_time += duration;
     state_since_ = now;
+}
+void CoinbaseConnectionManager::transition(core::BookState state) {
+    account_time(book_.state());
     switch (state) {
     case core::BookState::Initializing:
         book_.mark_initializing();
@@ -51,7 +65,7 @@ void CoinbaseConnectionManager::transition(core::BookState state) {
     }
 }
 void CoinbaseConnectionManager::start() {
-    if (!stopping_)
+    if (!stopping_ || terminal_)
         return;
     stopping_ = false;
     begin_connection();
@@ -85,7 +99,7 @@ void CoinbaseConnectionManager::begin_connection() {
         [this, life, generation](auto raw, auto wall, auto mono) {
             if (life.expired() || stopping_ || generation != generation_)
                 return false;
-            return handle_message(raw, wall, mono);
+            return handle_message(std::move(raw), wall, mono);
         },
         [this, life, generation](auto reason) {
             if (life.expired() || stopping_ || generation != generation_)
@@ -143,85 +157,46 @@ void CoinbaseConnectionManager::recover(std::string reason, core::BookState stat
         });
     }
 }
-bool CoinbaseConnectionManager::handle_message(std::string_view raw,
-                                               core::ReceiveWallTimestamp wall,
+void CoinbaseConnectionManager::terminal_recording_failure(std::string error) {
+    terminal_ = true;
+    stop();
+    metrics_.last_failure_reason = std::move(error);
+    transition(core::BookState::Invalid);
+}
+bool CoinbaseConnectionManager::handle_message(std::string raw, core::ReceiveWallTimestamp wall,
                                                core::ReceiveMonotonicTimestamp mono) {
     if (!connected_)
         return false;
-    try {
-        if (!sink_(connection_id_, raw, wall, mono))
-            throw std::runtime_error("recording failed");
-        health_.last_any_message = mono;
-        auto parsed = parser_.parse(raw, wall, mono);
-        if (parsed.status == ParseStatus::Error)
-            throw std::runtime_error(parsed.error);
-        // The session sequence spans all channels; only L2 events reach the book.
-        if (parsed.sequence) {
-            auto result = sequence_.observe(*parsed.sequence);
-            if (result == core::SequenceResult::Duplicate) {
-                ++health_.duplicate_sequences;
-                return true;
-            }
-            if (result == core::SequenceResult::OutOfOrder) {
-                ++health_.out_of_order_sequences;
-                return true;
-            }
-            if (result == core::SequenceResult::Gap) {
-                ++health_.sequence_gaps;
-                throw std::runtime_error("Coinbase envelope sequence gap");
-            }
-        }
-        if (auto heartbeat = parse_heartbeat(raw, wall, mono)) {
-            health_.last_heartbeat = heartbeat->receive_monotonic_time;
-            ++health_.heartbeat_count;
-            return true;
-        }
-        if (parsed.status == ParseStatus::Ignored)
-            return true;
-        health_.last_l2_message = mono;
-        if (book_.state() != core::BookState::Valid &&
-            (parsed.events.empty() ||
-             !std::holds_alternative<core::BookSnapshot>(parsed.events.front()))) {
-            ++metrics_.updates_before_snapshot;
-            throw std::runtime_error("L2 update before snapshot");
-        }
-        auto staged = book_;
-        std::uint64_t snapshots = 0, updates = 0;
-        for (const auto& event : parsed.events) {
-            if (std::holds_alternative<core::BookUpdate>(event) &&
-                staged.state() != core::BookState::Valid) {
-                ++metrics_.updates_before_snapshot;
-                throw std::runtime_error("L2 update before snapshot");
-            }
-            if (!std::visit([&](const auto& e) { return staged.apply(e); }, event))
-                throw std::runtime_error("book rejected event");
-            if (std::holds_alternative<core::BookSnapshot>(event))
-                ++snapshots;
-            else
-                ++updates;
-        }
-        const bool reconstructed = book_.state() != core::BookState::Valid && snapshots;
-        if (reconstructed)
-            transition(core::BookState::Valid);
-        book_ = std::move(staged);
-        metrics_.snapshots_received += snapshots;
-        metrics_.updates_received += updates;
-        if (reconstructed) {
-            backoff_.reset();
-            metrics_.time_to_first_snapshot =
-                std::chrono::nanoseconds{clock_().nanoseconds - connected_at_.nanoseconds};
-            if (recovery_since_) {
-                ++metrics_.recovery_successes;
-                metrics_.recovery_duration =
-                    std::chrono::nanoseconds{clock_().nanoseconds - recovery_since_->nanoseconds};
-                recovery_since_.reset();
-            }
-        }
-        return true;
-    } catch (const std::exception& e) {
-        recover(e.what(), core::BookState::Invalid);
+    handler_.connection_id = connection_id_;
+    const auto previous_state = book_.state();
+    const bool was_valid = previous_state == core::BookState::Valid;
+    const auto result = handler_.handle(std::move(raw), wall, mono);
+    if (book_.state() != previous_state)
+        account_time(previous_state);
+    if (result.outcome == MessageOutcome::RecordingRejected) {
+        terminal_recording_failure(result.error);
         return false;
     }
+    if (!result.error.empty()) {
+        if (result.error == "L2 update before snapshot")
+            ++metrics_.updates_before_snapshot;
+        recover(result.error, core::BookState::Invalid);
+        return false;
+    }
+    metrics_.snapshots_received += result.snapshots;
+    metrics_.updates_received += result.updates;
+    if (!was_valid && result.outcome == MessageOutcome::BookUpdated && result.snapshots) {
+        backoff_.reset();
+        metrics_.time_to_first_snapshot =
+            std::chrono::nanoseconds{clock_().nanoseconds - connected_at_.nanoseconds};
+        if (recovery_since_) {
+            ++metrics_.recovery_successes;
+            metrics_.recovery_duration =
+                std::chrono::nanoseconds{clock_().nanoseconds - recovery_since_->nanoseconds};
+            recovery_since_.reset();
+        }
+    }
+    return true;
 }
 void CoinbaseConnectionManager::check_health() {
     if (stopping_)

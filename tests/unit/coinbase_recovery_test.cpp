@@ -186,7 +186,8 @@ TEST_CASE("malformed L2, unsupported product, explicit errors, recorder and appl
         CHECK_FALSE(h.send(j.dump()));
         CHECK(h.manager.book().state() == State::Invalid);
         CHECK_FALSE(h.manager.book().best_bid());
-        CHECK(h.delays.size() == 1);
+        CHECK(h.delays.size() == (failure == 3 ? 0 : 1));
+        CHECK(h.manager.terminal() == (failure == 3));
     }
 }
 
@@ -276,4 +277,40 @@ TEST_CASE("malformed sequence on any channel fails closed") {
         CHECK(h.manager.book().state() == State::Invalid);
         CHECK(h.delays.size() == 1);
     }
+}
+
+TEST_CASE("asynchronous recorder failure cancels pending recovery permanently") {
+    Harness h;
+    h.connected();
+    REQUIRE(h.send(l2(0, true)));
+    h.error("network read failure");
+    REQUIRE(h.pending);
+    h.manager.terminal_recording_failure("injected writer failure");
+    auto started = h.manager.metrics().connections_started;
+    h.pending();
+    h.manager.start();
+    h.manager.check_health();
+    CHECK(h.manager.terminal());
+    CHECK_FALSE(h.manager.connected());
+    CHECK(h.manager.book().state() == State::Invalid);
+    CHECK(h.manager.metrics().connections_started == started);
+    CHECK(h.manager.metrics().last_failure_reason == "injected writer failure");
+}
+
+TEST_CASE("handler state changes retain recovery duration accounting") {
+    Harness h;
+    h.connected();
+    h.time = 1000000000;
+    REQUIRE(h.send(l2(0, true)));
+    h.time = 3000000000;
+    CHECK_FALSE(h.send("{"));
+    CHECK(h.manager.metrics().valid_time.count() == 2000000000);
+    h.time = 4000000000;
+    h.reconnect();
+    CHECK(h.manager.metrics().invalid_time.count() == 1000000000);
+    REQUIRE(h.send(l2(0, true)));
+    h.manager.stop();
+    h.manager.terminal_recording_failure("writer failed during drain");
+    CHECK(h.manager.book().state() == State::Invalid);
+    CHECK(h.manager.terminal());
 }

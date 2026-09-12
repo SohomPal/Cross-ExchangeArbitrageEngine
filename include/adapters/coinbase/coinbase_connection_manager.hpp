@@ -1,6 +1,7 @@
 #pragma once
 #include "adapters/coinbase/coinbase_feed_health.hpp"
 #include "adapters/coinbase/coinbase_l2_parser.hpp"
+#include "adapters/coinbase/coinbase_message_handler.hpp"
 #include "adapters/coinbase/coinbase_websocket_client.hpp"
 #include "adapters/coinbase/reconnect_policy.hpp"
 #include "core/order_book.hpp"
@@ -27,10 +28,14 @@ class CoinbaseConnectionManager {
                            CoinbaseWebSocketClient::ErrorHandler, std::function<void()>)>;
     using Schedule = std::function<void(std::chrono::milliseconds, std::function<void()>)>;
     CoinbaseConnectionManager(boost::asio::io_context&, Sink, Connect, std::function<void()> close,
-                              Clock clock, FeedHealthConfig = {}, Schedule schedule = {});
+                              Clock clock, FeedHealthConfig = {}, Schedule schedule = {},
+                              CoinbaseMessageHandler::Sink envelope_sink = {},
+                              CoinbaseMessageHandler::Publish publish = {});
     ~CoinbaseConnectionManager();
     void start();
     void stop();
+    void terminal_recording_failure(std::string error);
+    bool terminal() const { return terminal_; }
     void force_disconnect_for_test();
     void check_health();
     const core::OrderBook& book() const { return book_; }
@@ -43,10 +48,10 @@ class CoinbaseConnectionManager {
   private:
     void begin_connection();
     void handle_connected();
-    bool handle_message(std::string_view, core::ReceiveWallTimestamp,
-                        core::ReceiveMonotonicTimestamp);
+    bool handle_message(std::string, core::ReceiveWallTimestamp, core::ReceiveMonotonicTimestamp);
     void recover(std::string, core::BookState);
     void tick();
+    void account_time(core::BookState);
     void transition(core::BookState);
     Schedule schedule_;
     Sink sink_;
@@ -57,8 +62,9 @@ class CoinbaseConnectionManager {
     boost::asio::steady_timer health_timer_, reconnect_timer_;
     core::OrderBook book_{core::Venue::Coinbase, core::Instrument::BTC_USD};
     core::SequenceTracker sequence_;
-    CoinbaseL2Parser parser_;
     FeedHealth health_;
+    CoinbaseMessageHandler handler_;
+    bool terminal_{false};
     ReconnectPolicy backoff_;
     RecoveryMetrics metrics_;
     bool stopping_{true}, recovery_pending_{false}, connected_{false};

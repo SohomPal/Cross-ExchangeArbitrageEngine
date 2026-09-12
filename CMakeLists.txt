@@ -15,6 +15,7 @@ target_link_libraries(raw_recording PUBLIC arbitrage_core)
 target_include_directories(raw_recording SYSTEM PRIVATE third_party)
 
 add_library(coinbase_adapter
+    src/adapters/coinbase/coinbase_message_handler.cpp
     src/adapters/coinbase/coinbase_l2_parser.cpp
     src/adapters/coinbase/coinbase_symbol_mapper.cpp
     src/adapters/coinbase/coinbase_heartbeat_parser.cpp
@@ -30,8 +31,11 @@ target_link_libraries(coinbase_websocket PUBLIC arbitrage_core Boost::headers Op
 
 add_library(coinbase_recovery src/adapters/coinbase/coinbase_connection_manager.cpp)
 target_link_libraries(coinbase_recovery PUBLIC coinbase_adapter coinbase_websocket)
+find_package(Threads REQUIRED)
+add_library(pipeline_runtime src/pipeline/runtime_status.cpp src/pipeline/live_runtime.cpp)
+target_link_libraries(pipeline_runtime PUBLIC coinbase_recovery raw_recording Threads::Threads)
 add_executable(arbitrage_engine src/main.cpp)
-target_link_libraries(arbitrage_engine PRIVATE coinbase_recovery raw_recording)
+target_link_libraries(arbitrage_engine PRIVATE pipeline_runtime)
 
 # Keep the existing executable name and provide the development command spelling.
 add_custom_command(TARGET arbitrage_engine POST_BUILD
@@ -86,4 +90,30 @@ if(BUILD_TESTING)
         target_link_libraries(${test}_test PRIVATE coinbase_recovery raw_recording)
         add_test(NAME ${test}_test COMMAND ${test}_test)
     endforeach()
+endif()
+
+add_library(benchmark_statistics benchmarks/benchmark_statistics.cpp)
+target_include_directories(benchmark_statistics PUBLIC include)
+add_executable(e2e_latency_benchmark benchmarks/e2e_latency_benchmark.cpp)
+target_include_directories(e2e_latency_benchmark SYSTEM PRIVATE third_party)
+target_compile_definitions(e2e_latency_benchmark PRIVATE
+    BENCHMARK_BUILD_TYPE="$<CONFIG>"
+    BENCHMARK_PLATFORM="${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+target_link_libraries(e2e_latency_benchmark PRIVATE pipeline_runtime benchmark_statistics OpenSSL::Crypto)
+if(BUILD_TESTING)
+    add_executable(ingestion_runtime_test tests/unit/ingestion_runtime_test.cpp)
+    target_include_directories(ingestion_runtime_test SYSTEM PRIVATE tests/vendor third_party)
+    target_compile_definitions(ingestion_runtime_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+    target_link_libraries(ingestion_runtime_test PRIVATE pipeline_runtime benchmark_statistics)
+    add_test(NAME ingestion_runtime_test COMMAND ingestion_runtime_test)
+    set_tests_properties(ingestion_runtime_test PROPERTIES TIMEOUT 15)
+endif()
+if(BUILD_TESTING AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME benchmark_repeatability
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_repeatability.py
+            $<TARGET_FILE:e2e_latency_benchmark>
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase/benchmark.jsonl
+            $<TARGET_FILE:arbitrage_engine>)
+    set_tests_properties(benchmark_repeatability PROPERTIES TIMEOUT 60)
 endif()

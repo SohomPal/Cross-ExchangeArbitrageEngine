@@ -10,7 +10,7 @@ namespace adapters::coinbase {
 // Run all methods and callbacks on the single io_context thread.
 class CoinbaseWebSocketClient {
   public:
-    using MessageHandler = std::function<bool(std::string_view, core::ReceiveWallTimestamp,
+    using MessageHandler = std::function<bool(std::string, core::ReceiveWallTimestamp,
                                               core::ReceiveMonotonicTimestamp)>;
     using ErrorHandler = std::function<void(std::string_view)>;
     CoinbaseWebSocketClient(boost::asio::io_context&, boost::asio::ssl::context&, MessageHandler,

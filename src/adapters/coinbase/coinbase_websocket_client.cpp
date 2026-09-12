@@ -49,7 +49,10 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
                  Error(static_cast<int>(::ERR_get_error()), asio::error::get_ssl_category()));
             return;
         }
-        resolver.async_resolve(host, port, [self = shared_from_this()](Error ec, auto endpoints) {
+        // Synchronous DNS avoids Asio's hidden resolver worker thread.
+        Error resolve_error;
+        auto endpoints = resolver.resolve(host, port, resolve_error);
+        [self = shared_from_this()](Error ec, auto endpoints) {
             if (self->stopping)
                 return;
             if (ec)
@@ -79,7 +82,7 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
                         });
                     });
             });
-        });
+        }(resolve_error, endpoints);
     }
     void subscribe(std::size_t index) {
         writing = true;
@@ -111,12 +114,12 @@ struct CoinbaseWebSocketClient::Impl : std::enable_shared_from_this<Impl> {
             if (self->stopping)
                 return;
             using namespace std::chrono;
-            const core::ReceiveWallTimestamp wall{
-                duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count()};
             const core::ReceiveMonotonicTimestamp mono{
                 duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count()};
-            const auto payload = beast::buffers_to_string(self->buffer.data());
-            const bool proceed = self->message(payload, wall, mono);
+            const core::ReceiveWallTimestamp wall{
+                duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count()};
+            auto payload = beast::buffers_to_string(self->buffer.data());
+            const bool proceed = self->message(std::move(payload), wall, mono);
             self->buffer.consume(self->buffer.size());
             if (!proceed)
                 self->close();

@@ -29,15 +29,19 @@ and [WebSocket overview](https://docs.cdp.coinbase.com/coinbase-app/advanced-tra
 `coinbase_websocket` uses Asio, Beast, and OpenSSL to connect to
 `wss://advanced-trade-ws.coinbase.com` with SNI, certificate verification, hostname
 verification, and WebSocket timeouts. It sends separate public `level2` (BTC-USD)
-and `heartbeats` subscriptions sequentially, with no credentials. The connection manager records and flushes every delivered payload before parsing,
-including heartbeats, acknowledgements, duplicates, and failures. One recording
+and `heartbeats` subscriptions sequentially, with no credentials. The shared
+message handler enqueues every delivered payload before parsing, including
+heartbeats, acknowledgements, duplicates, and failures. A separate recording
+thread writes and flushes accepted messages. One recording
 contains all successful WebSocket sessions, with monotonically increasing connection
 IDs. Failed handshakes consume attempts but do not consume connection IDs.
 
 Only Valid books expose best prices or a two-sided market. Levels remain available
 for diagnostics in other states. Sequence gaps, malformed L2, unsupported products,
 explicit errors, recorder failures, and update-before-snapshot invalidate immediately.
-Transport errors disconnect; freshness failures mark Stale. Exactly one retry is
+Queue rejection and recorder failures are terminal and never reconnect.
+Transport errors disconnect; freshness failures mark Stale. For recoverable feed
+and network failures, exactly one retry is
 scheduled, and the next attempt enters Resyncing then Initializing after subscriptions
 are sent. A fresh, transactionally installed snapshot is required to become Valid.
 A new client and callback generation prevent abandoned sessions from changing state.
@@ -63,8 +67,10 @@ Retries use deterministic 250 ms, 500 ms, 1 s, 2 s, 4 s, 8 s, then 10 s delays.
 Only a fresh snapshot resets backoff. Shutdown cancels retries and sockets.
 Metrics expose session counts, reconstruction timings, integrity counters, freshness,
 and cumulative valid/stale/invalid durations (updated at health checks and transitions).
-The status line includes connection, book state, connection ID, sequence, heartbeat/L2
-ages, reconnects, gaps, prices, and the last failure reason.
+The copied status line includes runtime/connection/book state, sequence, BBO,
+queue size/bytes, all four progress positions and counts, and any fatal recording
+error or unpersisted processed tail. Recovery metrics remain owned by the market
+thread.
 
 Run `arbitrage_engine --record NEW_FILE.jsonl`, then stop with SIGINT or SIGTERM.
 Replay accepts increasing connection IDs and resets sequence/book usability at each

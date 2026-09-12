@@ -1,16 +1,13 @@
 #include "adapters/coinbase/coinbase_connection_manager.hpp"
 #include "adapters/coinbase/coinbase_message_pipeline.hpp"
+#include "pipeline/runtime_status.hpp"
 #include "recording/raw_event_reader.hpp"
 #include "recording/raw_event_recorder.hpp"
-#include <boost/asio/signal_set.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <csignal>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 
 using namespace adapters::coinbase;
-namespace asio = boost::asio;
 
 static void display(const CoinbaseMessagePipeline& pipeline) {
     const auto& book = pipeline.book;
@@ -37,6 +34,17 @@ int main(int argc, char** argv) {
     try {
         std::string mode, path, venue = "coinbase", instrument = "BTC-USD";
         int force_seconds = 0;
+        recording::RawQueueConfig queue_config;
+        std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024;
+        auto positive = [](const std::string& value) {
+            std::size_t consumed = 0;
+            if (value.empty() || value.front() == '-')
+                throw std::invalid_argument("expected positive integer");
+            auto number = std::stoull(value, &consumed);
+            if (!number || consumed != value.size())
+                throw std::invalid_argument("expected positive integer");
+            return number;
+        };
         for (int i = 1; i < argc; i += 2) {
             if (i + 1 == argc)
                 throw std::invalid_argument("option requires a value");
@@ -47,7 +55,13 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("choose one recording or replay path");
                 path = value;
                 mode = option == "--replay" ? "replay" : "record";
-            } else if (option == "--venue")
+            } else if (option == "--queue-messages")
+                queue_config.maximum_messages = positive(value);
+            else if (option == "--queue-bytes")
+                queue_config.maximum_bytes = positive(value);
+            else if (option == "--minimum-free-disk-bytes")
+                minimum_free_disk_bytes = positive(value);
+            else if (option == "--venue")
                 venue = value;
             else if (option == "--instrument")
                 instrument = value;
@@ -88,125 +102,7 @@ int main(int argc, char** argv) {
                 std::cerr << pipeline.error << '\n';
             return pipeline.error.empty() ? 0 : 1;
         }
-        recording::RawEventRecorder recorder{path};
-        if (!recorder.flush())
-            throw std::runtime_error("cannot open a new recording file");
-        asio::io_context io;
-        asio::ssl::context ssl{asio::ssl::context::tls_client};
-        ssl.set_default_verify_paths();
-        ssl.set_verify_mode(asio::ssl::verify_peer);
-        asio::signal_set signals{io, SIGINT, SIGTERM};
-        asio::steady_timer timer{io};
-        bool stopping = false;
-        auto stop_services = [&] {
-            stopping = true;
-            timer.cancel();
-            signals.cancel();
-        };
-        auto now = [] {
-            return core::ReceiveMonotonicTimestamp{
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count()};
-        };
-        std::unique_ptr<CoinbaseWebSocketClient> client;
-        CoinbaseConnectionManager manager{
-            io,
-            [&](auto id, auto raw, auto wall, auto mono) {
-                return recorder.append(core::Venue::Coinbase, id, wall, mono, raw) &&
-                       recorder.flush();
-            },
-            [&](auto message, auto error, auto connected) {
-                client = std::make_unique<CoinbaseWebSocketClient>(
-                    io, ssl, std::move(message), std::move(error), "advanced-trade-ws.coinbase.com",
-                    "443", std::move(connected));
-                client->connect();
-            },
-            [&] {
-                if (client)
-                    client->abort();
-            },
-            now};
-        asio::steady_timer fault_timer{io};
-        if (force_seconds) {
-            fault_timer.expires_after(std::chrono::seconds(force_seconds));
-            fault_timer.async_wait([&](auto ec) {
-                if (!ec)
-                    manager.force_disconnect_for_test();
-            });
-        }
-        auto status = [&] {
-            const auto& book = manager.book();
-            const char* state = "INVALID";
-            switch (book.state()) {
-            case core::BookState::Valid:
-                state = "VALID";
-                break;
-            case core::BookState::Initializing:
-                state = "INITIALIZING";
-                break;
-            case core::BookState::Disconnected:
-                state = "DISCONNECTED";
-                break;
-            case core::BookState::Resyncing:
-                state = "RESYNCING";
-                break;
-            case core::BookState::Stale:
-                state = "STALE";
-                break;
-            case core::BookState::Invalid:
-                break;
-            }
-            auto age = [&](auto timestamp) {
-                return timestamp
-                           ? std::to_string((now().nanoseconds - timestamp->nanoseconds) / 1000000)
-                           : "NA";
-            };
-            auto price = [](auto level) {
-                if (!level)
-                    return std::string{"NA"};
-                std::ostringstream out;
-                out << std::fixed << std::setprecision(2) << level->price.raw() / 100.0;
-                return out.str();
-            };
-            std::cout << "connection=" << (manager.connected() ? "CONNECTED" : "DISCONNECTED")
-                      << " book=" << state << " connection_id=" << manager.connection_id()
-                      << " sequence="
-                      << (manager.sequence() ? std::to_string(*manager.sequence()) : "NA")
-                      << " heartbeat_age_ms=" << age(manager.health().last_heartbeat)
-                      << " l2_age_ms=" << age(manager.health().last_l2_message)
-                      << " reconnects=" << manager.metrics().reconnect_attempts
-                      << " gaps=" << manager.health().sequence_gaps
-                      << " best_bid=" << price(book.best_bid())
-                      << " best_ask=" << price(book.best_ask())
-                      << " last_failure=" << manager.metrics().last_failure_reason << std::endl;
-        };
-        signals.async_wait([&](auto ec, int) {
-            if (ec)
-                return;
-            stop_services();
-            fault_timer.cancel();
-            manager.stop();
-        });
-        std::function<void()> tick;
-        tick = [&] {
-            timer.expires_after(std::chrono::seconds(1));
-            timer.async_wait([&](auto ec) {
-                if (ec || stopping)
-                    return;
-                status();
-                tick();
-            });
-        };
-        tick();
-        manager.start();
-        io.run();
-        const bool recorded = recorder.close();
-        status();
-        std::cout << "recorded_messages=" << recorder.next_record_index() << '\n';
-        if (!recorded)
-            std::cerr << "recording flush/close failed\n";
-        return recorded ? 0 : 1;
+        return pipeline::run_live(path, force_seconds, queue_config, minimum_free_disk_bytes);
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
