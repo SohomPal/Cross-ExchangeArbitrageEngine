@@ -1,6 +1,6 @@
 #pragma once
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 namespace benchmarks {
 struct LatencySample {
     std::int64_t nanoseconds;

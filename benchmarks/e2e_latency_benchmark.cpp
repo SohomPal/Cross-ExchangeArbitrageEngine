@@ -55,7 +55,8 @@ json stats_json(const std::vector<std::int64_t>& values) {
 template <class T> json optional_json(const std::optional<T>& value) {
     return value ? json(*value) : json(nullptr);
 }
-json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueConfig config, bool profile_stages) {
+json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueConfig config,
+           bool profile_stages) {
     TemporaryDirectory directory;
     auto output = directory.path / "raw.jsonl";
     recording::RawRecordingQueue queue{config};
@@ -139,21 +140,20 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                             .count()};
                     auto processed = handler.handle(std::move(payload), wall, mono);
                     handler_time += std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()) -
-                        std::chrono::nanoseconds{mono.nanoseconds};
+                                        std::chrono::steady_clock::now().time_since_epoch()) -
+                                    std::chrono::nanoseconds{mono.nanoseconds};
                     metadata.push_back({raw.record_index, raw.payload.size(),
                                         processed.number_of_changes, processed.contains_snapshot,
-                                        processed.canonical_event_count != 0,
-                                        processed.outcome, processed.latency, processed.stages});
+                                        processed.canonical_event_count != 0, processed.outcome,
+                                        processed.latency, processed.stages});
                     auto name = outcome_name(processed.outcome);
                     outcomes[name] = outcomes[name].get<std::uint64_t>() + 1;
                     if (processed.outcome == MessageOutcome::RecordingRejected)
                         throw std::runtime_error(processed.error);
                     if (processed.latency) {
-                        benchmarks::LatencySample sample{processed.latency->count(),
-                                                         processed.snapshots != 0,
-                                                         raw.record_index, raw.payload.size(),
-                                                         processed.number_of_changes};
+                        benchmarks::LatencySample sample{
+                            processed.latency->count(), processed.snapshots != 0, raw.record_index,
+                            raw.payload.size(), processed.number_of_changes};
                         samples.push_back(sample);
                         all.push_back(sample.nanoseconds);
                         (sample.snapshot ? snapshots : updates).push_back(sample.nanoseconds);
@@ -183,18 +183,21 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                     std::pair{"schema_validation_ns", &core::StageTimings::schema_validation_ns},
                     std::pair{"fixed_point_ns", &core::StageTimings::fixed_point_ns},
                     std::pair{"canonical_event_ns", &core::StageTimings::canonical_event_ns},
-                    std::pair{"sequence_validation_ns", &core::StageTimings::sequence_validation_ns},
+                    std::pair{"sequence_validation_ns",
+                              &core::StageTimings::sequence_validation_ns},
                     std::pair{"book_apply_ns", &core::StageTimings::book_apply_ns},
                     std::pair{"status_publish_ns", &core::StageTimings::status_publish_ns}};
                 for (const auto& m : metadata) {
                     largest_payload = std::max(largest_payload, m.bytes);
                     largest_changes = std::max(largest_changes, m.changes);
-                    records.push_back({{"record_index", m.index}, {"payload_bytes", m.bytes},
-                                       {"number_of_changes", m.changes},
-                                       {"snapshot_or_update", m.snapshot ? "snapshot" :
-                                            (m.l2 ? "update" : "unsampled")},
-                                       {"outcome", outcome_name(m.outcome)},
-                                       {"latency_ns", m.latency ? json(m.latency->count()) : json(nullptr)}});
+                    records.push_back(
+                        {{"record_index", m.index},
+                         {"payload_bytes", m.bytes},
+                         {"number_of_changes", m.changes},
+                         {"snapshot_or_update",
+                          m.snapshot ? "snapshot" : (m.l2 ? "update" : "unsampled")},
+                         {"outcome", outcome_name(m.outcome)},
+                         {"latency_ns", m.latency ? json(m.latency->count()) : json(nullptr)}});
                 }
                 if (profile_stages) {
                     for (auto [name, member] : stage_fields) {
@@ -216,8 +219,12 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                     }
                     if (!sample.snapshot) {
                         auto n = sample.number_of_changes;
-                        const auto bucket = n == 0 ? 0 : n == 1 ? 1 : n <= 5 ? 2 :
-                                            n <= 20 ? 3 : n <= 100 ? 4 : 5;
+                        const auto bucket = n == 0     ? 0
+                                            : n == 1   ? 1
+                                            : n <= 5   ? 2
+                                            : n <= 20  ? 3
+                                            : n <= 100 ? 4
+                                                       : 5;
                         buckets[bucket].push_back(sample.nanoseconds);
                     }
                 }
@@ -249,7 +256,8 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                           {"messages_per_second", data.size() / elapsed},
                           {"levels_processed", levels},
                           {"levels_per_second", levels / elapsed},
-                          {"nanoseconds_per_changed_level", levels ? double(total_latency / levels) : 0.0},
+                          {"nanoseconds_per_changed_level",
+                           levels ? double(total_latency / levels) : 0.0},
                           {"largest_payload_bytes", largest_payload},
                           {"largest_change_count", largest_changes},
                           {"maximum_latency_record_index", optional_json(max_index)},
@@ -355,8 +363,7 @@ int main(int argc, char** argv) {
                 if (value != "on" && value != "off")
                     throw std::invalid_argument("--profile-stages expects on or off");
                 profile_stages = value == "on";
-            }
-            else if (option == "--queue-messages")
+            } else if (option == "--queue-messages")
                 config.maximum_messages = positive(value);
             else if (option == "--queue-bytes")
                 config.maximum_bytes = positive(value);

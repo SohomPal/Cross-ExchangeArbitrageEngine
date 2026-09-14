@@ -75,11 +75,16 @@ core::ExchangeTimestamp parse_timestamp(std::string_view value) {
 
 CoinbaseL2Parser::CoinbaseL2Parser(CoinbaseSymbolMapper symbols) : symbols_(std::move(symbols)) {}
 
-CoinbaseParseResult
-CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp receive_wall_time,
-                        core::ReceiveMonotonicTimestamp receive_monotonic_time,
-                        core::StageTimings* timings, bool retain_raw_message) const {
-    CoinbaseParseResult result{ParseStatus::Error, {}, {}, retain_raw_message ? std::string{raw_message} : std::string{}, {}};
+CoinbaseParseResult CoinbaseL2Parser::parse(std::string_view raw_message,
+                                            core::ReceiveWallTimestamp receive_wall_time,
+                                            core::ReceiveMonotonicTimestamp receive_monotonic_time,
+                                            core::StageTimings* timings,
+                                            bool retain_raw_message) const {
+    CoinbaseParseResult result{ParseStatus::Error,
+                               {},
+                               {},
+                               retain_raw_message ? std::string{raw_message} : std::string{},
+                               {}};
     const auto prior_conversion = timings ? timings->fixed_point_ns : 0;
     const auto prior_construction = timings ? timings->canonical_event_ns : 0;
     try {
@@ -92,9 +97,11 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
         if (!message.contains("channel") && !message.contains("type"))
             throw std::invalid_argument("message requires channel or type");
         const std::string_view channel = message.contains("channel")
-            ? std::string_view{string_field(message, "channel")} : std::string_view{};
+                                             ? std::string_view{string_field(message, "channel")}
+                                             : std::string_view{};
         const std::string_view type = message.contains("type")
-            ? std::string_view{string_field(message, "type")} : std::string_view{};
+                                          ? std::string_view{string_field(message, "type")}
+                                          : std::string_view{};
         if (type == "error" || channel == "error")
             throw std::invalid_argument("explicit Coinbase error: " + std::string(raw_message));
         const bool l2 = channel == "l2_data";
@@ -135,11 +142,14 @@ CoinbaseL2Parser::parse(std::string_view raw_message, core::ReceiveWallTimestamp
                 }
                 (void)parse_timestamp(string_field(update, "event_time"));
                 core::StageTimer conversion(timings ? &timings->fixed_point_ns : nullptr);
-                const auto price = core::parse_price(string_field(update, "price_level"), config->price_scale);
-                const auto quantity = core::parse_quantity(string_field(update, "new_quantity"), config->quantity_scale);
+                const auto price =
+                    core::parse_price(string_field(update, "price_level"), config->price_scale);
+                const auto quantity = core::parse_quantity(string_field(update, "new_quantity"),
+                                                           config->quantity_scale);
                 conversion.stop();
                 core::StageTimer construction(timings ? &timings->canonical_event_ns : nullptr);
-                levels.push_back({side == "bid" ? core::Side::Bid : core::Side::Ask, price, quantity});
+                levels.push_back(
+                    {side == "bid" ? core::Side::Bid : core::Side::Ask, price, quantity});
             }
             core::StageTimer construction(timings ? &timings->canonical_event_ns : nullptr);
             if (type == "snapshot") {

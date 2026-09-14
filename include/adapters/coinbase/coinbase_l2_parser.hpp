@@ -29,10 +29,11 @@ class CoinbaseL2Parser {
     explicit CoinbaseL2Parser(CoinbaseSymbolMapper symbols);
     // Handlers already owning an immutable RawEnvelope can disable the redundant raw copy.
     // Errors are atomic across the entire envelope; events is empty on failure.
-    [[nodiscard]] CoinbaseParseResult
-    parse(std::string_view raw_message, core::ReceiveWallTimestamp receive_wall_time,
-          core::ReceiveMonotonicTimestamp receive_monotonic_time,
-          core::StageTimings* timings = nullptr, bool retain_raw_message = true) const;
+    [[nodiscard]] CoinbaseParseResult parse(std::string_view raw_message,
+                                            core::ReceiveWallTimestamp receive_wall_time,
+                                            core::ReceiveMonotonicTimestamp receive_monotonic_time,
+                                            core::StageTimings* timings = nullptr,
+                                            bool retain_raw_message = true) const;
 
   private:
     CoinbaseSymbolMapper symbols_;

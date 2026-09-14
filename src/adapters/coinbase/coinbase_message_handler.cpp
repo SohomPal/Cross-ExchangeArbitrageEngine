@@ -70,9 +70,9 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
         return result;
     };
     health_.last_any_message = envelope.receive_monotonic_time;
-    const auto parsed = parser_.parse(envelope.payload, envelope.receive_wall_time,
-                                      envelope.receive_monotonic_time,
-                                      profile_stages ? &result.stages : nullptr, false);
+    const auto parsed =
+        parser_.parse(envelope.payload, envelope.receive_wall_time, envelope.receive_monotonic_time,
+                      profile_stages ? &result.stages : nullptr, false);
     if (parsed.status == ParseStatus::Error)
         return fail(MessageOutcome::ParseError, parsed.error);
     result.canonical_event_count = parsed.events.size();
@@ -84,7 +84,8 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
             result.number_of_changes += std::get<core::BookUpdate>(event).changes.size();
         }
     }
-    core::StageTimer sequence_timer(profile_stages ? &result.stages.sequence_validation_ns : nullptr);
+    core::StageTimer sequence_timer(profile_stages ? &result.stages.sequence_validation_ns
+                                                   : nullptr);
     if (parsed.sequence) {
         switch (sequence_.observe(*parsed.sequence)) {
         case core::SequenceResult::Duplicate:
@@ -109,7 +110,7 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
     if (parsed.heartbeat_channel) {
         core::StageTimer heartbeat_timer(profile_stages ? &result.stages.json_parse_ns : nullptr);
         const auto heartbeat = parse_heartbeat(envelope.payload, envelope.receive_wall_time,
-                                                envelope.receive_monotonic_time);
+                                               envelope.receive_monotonic_time);
         heartbeat_timer.stop();
         if (heartbeat) {
             health_.last_heartbeat = heartbeat->receive_monotonic_time;

@@ -221,7 +221,8 @@ TEST_CASE("Envelope owner can omit raw copy while retaining canonical events") {
     const auto begin = std::chrono::steady_clock::now();
     const auto again = parser.parse(raw, {1}, {2}, &timings, false);
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - begin).count();
+                             std::chrono::steady_clock::now() - begin)
+                             .count();
     CHECK(again.events == owned.events);
     CHECK(timings.schema_validation_ns >= first_schema);
     CHECK(timings.schema_validation_ns - first_schema <= elapsed);

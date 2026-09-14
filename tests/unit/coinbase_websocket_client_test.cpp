@@ -104,14 +104,19 @@ TEST_CASE(
 TEST_CASE("transport errors are surfaced once without delivering messages") {
     asio::io_context io;
     asio::ssl::context ssl{asio::ssl::context::tls_client};
-    // Accept TCP, then reset it during TLS setup. A bound, non-listening port
-    // can wait for OS connect retries and is not a portable failure fixture.
+    // Wait for client TLS data before resetting TCP so the failure cannot race
+    // with connect completion and be reported as a connect error on some OSes.
     tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
     tcp::socket peer{io};
+    char tls_byte{};
     acceptor.async_accept(peer, [&](Error ec) {
         REQUIRE_FALSE(ec);
-        peer.set_option(asio::socket_base::linger{true, 0});
-        peer.close();
+        peer.async_read_some(asio::buffer(&tls_byte, 1), [&](Error ec, std::size_t bytes_read) {
+            REQUIRE_FALSE(ec);
+            REQUIRE(bytes_read == 1);
+            peer.set_option(asio::socket_base::linger{true, 0});
+            peer.close();
+        });
     });
     bool timed_out = false;
     asio::steady_timer deadline{io, std::chrono::seconds(5)};
@@ -130,6 +135,7 @@ TEST_CASE("transport errors are surfaced once without delivering messages") {
                                    },
                                    [&](auto error) {
                                        ++errors;
+                                       INFO(error);
                                        CHECK(error.find("TLS handshake:") == 0);
                                        deadline.cancel();
                                    },
