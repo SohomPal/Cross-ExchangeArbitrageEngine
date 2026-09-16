@@ -19,7 +19,7 @@ Final book SHA-256: `9c929618e06b5e629ed2067ddbf692aa6d071156037f730265762f1fa9b
 
 The historical baseline retained transactional full-book copies. These numbers establish a baseline; they do not isolate the cost of individual stages. The snapshot is reported separately so it cannot distort the normal update distribution.
 
-See [methodology and commands](ingestion-benchmark.md). The generated JSON report includes all statistics and full book contents; it is intentionally not committed because this dataset produces a roughly 14 MiB report. Re-running produces fresh timing values and verifies the same counts and book hash.
+See [methodology and commands](ingestion-benchmark.md). The historical JSON report includes all statistics and full book contents; it is intentionally not committed because this dataset produces a roughly 14 MiB report. Re-running produces fresh timing values and verifies the same counts and book hash.
 
 ## Sequential optimization measurements
 
@@ -59,3 +59,15 @@ Trial 1 processed 68,574 canonical levels, including the snapshot: 424,954 level
 Full reports were written to `/tmp/ingestion-<row>.json` (earlier reports compressed as `.json.gz` to recover disk space). Final metadata and stage reports are `/tmp/ingestion-final.json` and `/tmp/ingestion-final-profile.json`. The compact machine-readable trial statistics are in [ingestion-optimization-results.json](ingestion-optimization-results.json).
 
 Fixed-point character parsing, shared immutable envelopes, WebSocket buffer reuse, the three-thread recorder architecture, and terminal recorder failures were already implemented and were retained. DOM parser scratch reuse and allocation counting remain unimplemented; no custom allocator was added. Instruments could not run because `xctrace` is unavailable. See the [methodology](ingestion-benchmark.md) for the profiling command and precise timing boundaries.
+
+## Session replay and artifact format update
+
+New benchmark reports omit `final_book_contents` unless `--include-final-book` is
+specified. Full-book comparison still runs internally; compact trials retain the
+hash, best prices, level counts and final sequence. The measurements above are
+historical and have not been remeasured for the session/processor refactor.
+
+[Session capture and replay](session-replay.md) adds completion manifests,
+checksum validation, recorded precision, lifecycle events and deterministic
+functional result hashes. Those hashes exclude timing measurements and use a
+separate documented encoding from the historical benchmark book hash.

@@ -1,9 +1,13 @@
 #pragma once
+#include "adapters/coinbase/coinbase_connection_manager.hpp"
 #include "adapters/coinbase/coinbase_message_handler.hpp"
 #include "recording/raw_event_recorder.hpp"
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
+namespace sessions {
+class Capture;
+}
 namespace pipeline {
 enum class RuntimeState {
     Starting,
@@ -15,6 +19,7 @@ enum class RuntimeState {
     StoppedProcessingError
 };
 struct RuntimeStatus {
+    std::vector<adapters::coinbase::LifecycleEvent> lifecycle_events;
     RuntimeState runtime_state{RuntimeState::Starting};
     bool connected{false};
     core::BookState book_state{core::BookState::Initializing};
@@ -45,5 +50,6 @@ void write_raw(recording::RawRecordingQueue&, SharedRuntime&, const std::filesys
                std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024, AppendRaw append = {});
 std::string unpersisted_processed_range(const RuntimeStatus&);
 int run_live(const std::filesystem::path&, int force_seconds, recording::RawQueueConfig = {},
-             std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024);
+             std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024,
+             sessions::Capture* capture = nullptr);
 } // namespace pipeline

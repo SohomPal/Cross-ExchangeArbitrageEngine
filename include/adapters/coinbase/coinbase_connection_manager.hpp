@@ -9,6 +9,11 @@
 #include <boost/asio/steady_timer.hpp>
 
 namespace adapters::coinbase {
+struct LifecycleEvent {
+    std::uint64_t before_record_index;
+    core::BookState state;
+    std::string reason;
+};
 struct RecoveryMetrics {
     std::uint64_t connections_started{0}, connections_succeeded{0}, disconnects{0},
         reconnect_attempts{0}, recovery_successes{0}, recovery_count{0}, snapshots_received{0},
@@ -32,6 +37,7 @@ class CoinbaseConnectionManager {
                               CoinbaseMessageHandler::Sink envelope_sink = {},
                               CoinbaseMessageHandler::Publish publish = {});
     ~CoinbaseConnectionManager();
+    std::function<void(const LifecycleEvent&)> observe_lifecycle;
     void start();
     void stop();
     void terminal_recording_failure(std::string error);
@@ -52,7 +58,7 @@ class CoinbaseConnectionManager {
     void recover(std::string, core::BookState);
     void tick();
     void account_time(core::BookState);
-    void transition(core::BookState);
+    void transition(core::BookState, std::string reason = {});
     Schedule schedule_;
     Sink sink_;
     Connect connect_;

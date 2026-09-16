@@ -271,6 +271,8 @@ json trial(const std::vector<recording::RawMessage>& data, recording::RawQueueCo
                           {"final_best_bid", best(book.best_bid())},
                           {"final_best_ask", best(book.best_ask())},
                           {"final_book_contents", contents},
+                          {"final_bid_levels", book.bids().size()},
+                          {"final_ask_levels", book.asks().size()},
                           {"final_book_hash", sha256(contents.dump())}};
             } catch (...) {
                 failure = std::current_exception();
@@ -346,8 +348,13 @@ int main(int argc, char** argv) {
         std::string input, output;
         std::size_t trials = 5, warmups = 1;
         recording::RawQueueConfig config;
-        bool profile_stages = false;
+        bool profile_stages = false, include_final_book = false;
         for (int i = 1; i < argc; i += 2) {
+            if (std::string_view(argv[i]) == "--include-final-book") {
+                include_final_book = true;
+                --i;
+                continue;
+            }
             if (i + 1 == argc)
                 throw std::invalid_argument("option requires a value");
             std::string option = argv[i], value = argv[i + 1];
@@ -410,6 +417,8 @@ int main(int argc, char** argv) {
             else if (stable != expected)
                 throw std::runtime_error("nondeterministic trial counts or final book");
             if (i >= warmups) {
+                if (!include_final_book)
+                    result.erase("final_book_contents");
                 result["trial"] = i - warmups + 1;
                 report["trials"].push_back(std::move(result));
             }

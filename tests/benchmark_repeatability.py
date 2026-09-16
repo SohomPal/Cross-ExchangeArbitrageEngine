@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix="benchmark-test-") as directory:
             "BookUpdated": 4, "Ignored": 3, "Duplicate": 1, "OutOfOrder": 1,
             "ParseError": 1, "SequenceGap": 1, "ApplyError": 1, "RecordingRejected": 0,
         }
-        assert trial["final_book_contents"] == contents
+        assert "final_book_contents" not in trial
         assert trial["final_book_hash"] == expected_hash
         assert trial["final_sequence"] == 2
         assert trial["final_best_bid"] == 6214327
@@ -67,10 +67,11 @@ with tempfile.TemporaryDirectory(prefix="benchmark-test-") as directory:
                     values[math.ceil(percentile / 100 * len(values)) - 1] if values else 0)
     profiled_output = pathlib.Path(directory) / "profiled.json"
     subprocess.run([binary, "--input", fixture, "--trials", "2", "--warmup-trials", "1",
-                    "--profile-stages", "on", "--output", str(profiled_output)],
+                    "--include-final-book", "--profile-stages", "on", "--output", str(profiled_output)],
                    check=True, timeout=30)
     profiled = json.loads(profiled_output.read_text())
     assert profiled["profile_stages"] is True
+    assert profiled["trials"][0]["final_book_contents"] == contents
     for trial in profiled["trials"]:
         assert trial["final_book_hash"] == expected_hash
         assert trial["outcomes"] == report["trials"][0]["outcomes"]

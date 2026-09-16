@@ -42,7 +42,8 @@ ProcessResult CoinbaseMessageHandler::handle(std::string payload, core::ReceiveW
                                : "RAW_RECORDING_QUEUE_CLOSED";
         } else {
             progress.last_enqueued_index = index;
-            result = process(*envelope);
+            processor_.profile_stages = profile_stages;
+            result = processor_.process(*envelope);
             progress.last_processed_index = index;
         }
         result.stages.enqueue_ns = enqueue_ns;
@@ -61,7 +62,7 @@ ProcessResult CoinbaseMessageHandler::handle(std::string payload, core::ReceiveW
     }
     return result;
 }
-ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& envelope) {
+ProcessResult CoinbaseMessageProcessor::process(const recording::RawEnvelope& envelope) {
     ProcessResult result;
     auto fail = [&](MessageOutcome outcome, std::string error) {
         book_.invalidate();
@@ -140,10 +141,8 @@ ProcessResult CoinbaseMessageHandler::process(const recording::RawEnvelope& enve
     }
     application.stop();
     // Capture only after the entire transaction has installed levels, sequence and state.
-    const auto updated = std::chrono::steady_clock::now();
-    result.latency =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(updated.time_since_epoch()) -
-        std::chrono::nanoseconds{envelope.receive_monotonic_time.nanoseconds};
+    result.latency = std::chrono::nanoseconds{clock_.monotonic_now().nanoseconds} -
+                     std::chrono::nanoseconds{envelope.receive_monotonic_time.nanoseconds};
     result.outcome = MessageOutcome::BookUpdated;
     return result;
 }

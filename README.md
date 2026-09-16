@@ -7,6 +7,9 @@ The current implementation includes exact fixed-point numeric types, canonical
 market events, an order book, a live Coinbase Level 2 feed, and raw message recording with offline replay.
 Trading logic is not implemented.
 
+After installing the [development dependencies](docs/development.md), run
+`./install.sh` to build in Release mode and run the full test suite.
+
 ```sh
 ./build/arbitrage_engine --record data/session.jsonl
 # Stop with Ctrl-C, then replay the recording:
@@ -36,3 +39,7 @@ Sequence continuity includes all channels; only L2 messages modify the book.
 Latency benchmarking and the three-thread live runtime are documented in
 [ingestion-benchmark.md](docs/ingestion-benchmark.md) and
 [architecture.md](docs/architecture.md).
+
+Versioned captures and checksum-verified deterministic replay are described in
+[Session manifests and replay](docs/session-replay.md). New captures should use
+`capture --session data/sessions/NEW_SESSION`.

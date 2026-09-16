@@ -147,3 +147,9 @@ Inspect the market thread's handler stacks separately from preload, writer, and
 final verification stacks. Use Instruments Allocations for allocation counts.
 In this environment `xcrun --find xctrace` failed: Instruments was not available,
 so no Time Profiler or Allocations trace was collected.
+
+Full final books are omitted from new trial reports by default. Reports retain
+`final_book_hash`, `final_best_bid`, `final_best_ask`, `final_bid_levels`,
+`final_ask_levels` and `final_sequence`. Use the flag `--include-final-book` to
+include `final_book_contents` in each trial. Repeatability still checks the full
+book internally. See [session replay](session-replay.md) for verified raw replay.

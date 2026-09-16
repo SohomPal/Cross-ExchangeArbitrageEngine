@@ -1,6 +1,7 @@
 #pragma once
 #include "adapters/coinbase/coinbase_feed_health.hpp"
 #include "adapters/coinbase/coinbase_l2_parser.hpp"
+#include "core/clock.hpp"
 #include "core/order_book.hpp"
 #include "core/sequence_tracker.hpp"
 #include "recording/raw_recording_queue.hpp"
@@ -33,6 +34,24 @@ struct RuntimeProgress {
     std::optional<std::uint64_t> last_received_index, last_enqueued_index, last_written_index,
         last_processed_index;
 };
+// Shared functional processing; no recording side effects.
+class CoinbaseMessageProcessor {
+  public:
+    CoinbaseMessageProcessor(core::OrderBook& book, core::SequenceTracker& sequence,
+                             FeedHealth& health, core::Clock& clock,
+                             CoinbaseSymbolMapper symbols = {})
+        : book_(book), sequence_(sequence), health_(health), clock_(clock),
+          parser_(std::move(symbols)) {}
+    ProcessResult process(const recording::RawEnvelope& envelope);
+    bool profile_stages{false};
+
+  private:
+    core::OrderBook& book_;
+    core::SequenceTracker& sequence_;
+    FeedHealth& health_;
+    core::Clock& clock_;
+    CoinbaseL2Parser parser_;
+};
 // All methods, book/sequence/health references and publish callbacks belong to the market thread.
 class CoinbaseMessageHandler {
   public:
@@ -40,8 +59,8 @@ class CoinbaseMessageHandler {
     using Publish = std::function<void(const ProcessResult&, const RuntimeProgress&)>;
     CoinbaseMessageHandler(core::OrderBook& book, core::SequenceTracker& sequence,
                            FeedHealth& health, Sink sink, Publish publish = {})
-        : book_(book), sequence_(sequence), health_(health), sink_(std::move(sink)),
-          publish_(std::move(publish)) {}
+        : book_(book), sink_(std::move(sink)), publish_(std::move(publish)),
+          processor_(book, sequence, health, clock_) {}
     ProcessResult handle(std::string payload, core::ReceiveWallTimestamp wall,
                          core::ReceiveMonotonicTimestamp mono);
     bool profile_stages{false};
@@ -49,13 +68,11 @@ class CoinbaseMessageHandler {
     RuntimeProgress progress;
 
   private:
-    ProcessResult process(const recording::RawEnvelope& envelope);
     core::OrderBook& book_;
-    core::SequenceTracker& sequence_;
-    FeedHealth& health_;
     Sink sink_;
     Publish publish_;
-    CoinbaseL2Parser parser_;
+    core::LiveClock clock_;
+    CoinbaseMessageProcessor processor_;
     std::uint64_t next_index_{0};
 };
 } // namespace adapters::coinbase

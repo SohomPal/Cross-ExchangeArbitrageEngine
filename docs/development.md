@@ -4,6 +4,7 @@
 
 - CMake 3.20 or newer.
 - A C++20 compiler.
+- Python 3 (for benchmark repeatability tests).
 
 - Boost development headers and OpenSSL development libraries.
 
@@ -16,14 +17,20 @@ are vendored. Once dependencies are installed, builds and tests need no internet
 Run from the repository root:
 
 ```sh
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
-./build/arbitrage_engine --record data/session.jsonl
+./install.sh
+./build/arbitrage_engine capture --session data/sessions/session-example
 ```
 
-Stop with Ctrl-C and run `./build/arbitrage_engine --replay data/session.jsonl`
-to reconstruct the final book offline. The live command requires network access;
+`install.sh` configures a Release build with `BUILD_TESTING=ON`, builds all
+targets, and runs the entire CTest suite, including benchmark repeatability and
+session replay. It exits unsuccessfully if configuration, compilation or any
+test fails, or if no tests are registered. It reuses the build directory and
+can also be invoked by its path from another working directory.
+
+Stop with Ctrl-C and run
+`./build/arbitrage_engine replay --session data/sessions/session-example --output data/replays/example/result.json`
+to reconstruct the final book offline. See [session replay](session-replay.md) for
+validation and incomplete-source handling. The live command requires network access;
 it is never run in CI. Tests use fixtures and a local TLS WebSocket peer. The
 committed localhost key is a public test-only key and must never be used elsewhere.
 TLS verification remains enabled in tests and production.

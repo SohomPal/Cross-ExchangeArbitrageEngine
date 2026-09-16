@@ -97,3 +97,17 @@ stream-write/flush contract, not a new power-loss durability guarantee.
 
 See [the latency benchmark](ingestion-benchmark.md) for timing boundaries,
 repeatability checks, and [measured baseline results](ingestion-benchmark-results.md).
+
+
+## Recorded sessions
+
+The live message handler enqueues an immutable raw envelope before calling
+`CoinbaseMessageProcessor`. Session replay calls that same processor directly,
+with a `ReplayClock` loaded from the envelope, and never creates a raw recorder.
+The connection manager publishes record-positioned lifecycle events so health
+failures and shutdown outside message callbacks can also be reconstructed.
+
+Capture starts with an in-progress manifest. The coordinator finalizes metadata
+only after the market and recording threads have joined. Replay validates the
+whole source before processing and atomically publishes a new result file.
+See [session manifests and replay](session-replay.md) for the format and commands.

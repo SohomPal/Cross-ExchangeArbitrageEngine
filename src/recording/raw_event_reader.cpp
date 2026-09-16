@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <sstream>
+#include <limits>
 
 using nlohmann::json;
 
@@ -28,6 +29,11 @@ std::optional<RawMessage> RawEventReader::next() {
         return std::nullopt;
     }
 
+    if (input_.eof()) {
+        last_error_ = "truncated JSONL: missing final newline";
+        return std::nullopt;
+    }
+
     // parse JSON
     json j;
     try {
@@ -38,7 +44,7 @@ std::optional<RawMessage> RawEventReader::next() {
     }
 
     // Validate format_version
-    if (!j.contains("format_version") || j["format_version"].get<int>() != 1) {
+    if (!j.contains("format_version") || !j["format_version"].is_number_unsigned() || j["format_version"] != 1) {
         last_error_ = "unsupported or missing format_version";
         return std::nullopt;
     }
@@ -54,6 +60,19 @@ std::optional<RawMessage> RawEventReader::next() {
         }
     }
 
+    if (!j["record_index"].is_number_unsigned() || !j["connection_id"].is_number_unsigned() ||
+        !j["receive_wall_ns"].is_number_integer() || !j["receive_monotonic_ns"].is_number_integer() ||
+        !j["venue"].is_string() || !j["payload"].is_string()) {
+        last_error_ = "invalid raw record field type";
+        return std::nullopt;
+    }
+    for (const auto* field : {"receive_wall_ns", "receive_monotonic_ns"}) {
+        if (j[field].is_number_unsigned() && j[field].get<std::uint64_t>() >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            last_error_ = "raw timestamp out of range";
+            return std::nullopt;
+        }
+    }
     std::uint64_t record_index = j["record_index"].get<std::uint64_t>();
     // contiguous index check
     if (record_index != expected_index_) {

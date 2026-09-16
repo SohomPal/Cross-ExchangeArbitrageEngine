@@ -1,6 +1,7 @@
 #include "adapters/coinbase/coinbase_connection_manager.hpp"
 #include "pipeline/joining_thread.hpp"
 #include "pipeline/runtime_status.hpp"
+#include "session/session.hpp"
 #include <atomic>
 #include <boost/asio/post.hpp>
 #include <csignal>
@@ -78,7 +79,7 @@ void display(const RuntimeStatus& s) {
 }
 } // namespace
 int run_live(const std::filesystem::path& path, int force_seconds, recording::RawQueueConfig config,
-             std::uintmax_t minimum_free_disk_bytes) {
+             std::uintmax_t minimum_free_disk_bytes, sessions::Capture* capture) {
     SharedRuntime shared;
     recording::RawRecordingQueue queue{config};
     stop_requested = 0;
@@ -141,6 +142,11 @@ int run_live(const std::filesystem::path& path, int force_seconds, recording::Ra
                         s.progress.last_enqueued_index = progress.last_enqueued_index;
                         s.progress.last_processed_index = progress.last_processed_index;
                     }};
+                if (capture)
+                    manager.observe_lifecycle = [&](const LifecycleEvent& event) {
+                        std::lock_guard lock(shared.mutex);
+                        shared.status.lifecycle_events.push_back(event);
+                    };
                 auto publish = [&] {
                     const auto& b = manager.book();
                     auto bid = b.best_bid(), ask = b.best_ask();
@@ -279,6 +285,8 @@ int run_live(const std::filesystem::path& path, int force_seconds, recording::Ra
         shared.status.recording_queue_bytes = queue.payload_bytes();
     }
     auto final = shared.copy_status();
+    if (capture)
+        capture->finalize(final);
     display(final);
     return final.fatal_error ? 1 : 0;
 }

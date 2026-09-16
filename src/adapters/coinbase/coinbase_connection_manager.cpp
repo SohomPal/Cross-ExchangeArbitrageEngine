@@ -42,7 +42,11 @@ void CoinbaseConnectionManager::account_time(core::BookState state) {
         metrics_.invalid_time += duration;
     state_since_ = now;
 }
-void CoinbaseConnectionManager::transition(core::BookState state) {
+void CoinbaseConnectionManager::transition(core::BookState state, std::string reason) {
+    if (observe_lifecycle && !reason.empty())
+        observe_lifecycle(
+            {handler_.progress.last_received_index ? *handler_.progress.last_received_index + 1 : 0,
+             state, std::move(reason)});
     account_time(book_.state());
     switch (state) {
     case core::BookState::Initializing:
@@ -82,14 +86,14 @@ void CoinbaseConnectionManager::stop() {
     close_();
     connected_ = false;
     sequence_.reset();
-    transition(core::BookState::Disconnected);
+    transition(core::BookState::Disconnected, "requested_shutdown");
 }
 void CoinbaseConnectionManager::begin_connection() {
     if (stopping_)
         return;
     recovery_pending_ = false;
     connected_ = false;
-    transition(core::BookState::Resyncing);
+    transition(core::BookState::Resyncing, "resynchronization");
     sequence_.reset();
     connected_at_ = clock_();
     ++metrics_.connections_started;
@@ -121,14 +125,14 @@ void CoinbaseConnectionManager::handle_connected() {
     connected_at_ = clock_();
     health_.reset(connected_at_);
     sequence_.reset();
-    transition(core::BookState::Initializing);
+    transition(core::BookState::Initializing, "new_connection");
 }
 void CoinbaseConnectionManager::recover(std::string reason, core::BookState state) {
     if (stopping_ || recovery_pending_)
         return;
     recovery_pending_ = true;
     ++generation_;
-    transition(state);
+    transition(state, reason);
     sequence_.reset();
     if (connected_)
         ++metrics_.disconnects;
@@ -161,7 +165,7 @@ void CoinbaseConnectionManager::terminal_recording_failure(std::string error) {
     terminal_ = true;
     stop();
     metrics_.last_failure_reason = std::move(error);
-    transition(core::BookState::Invalid);
+    transition(core::BookState::Invalid, "terminal_failure");
 }
 bool CoinbaseConnectionManager::handle_message(std::string raw, core::ReceiveWallTimestamp wall,
                                                core::ReceiveMonotonicTimestamp mono) {

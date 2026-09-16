@@ -3,8 +3,10 @@
 #include "pipeline/runtime_status.hpp"
 #include "recording/raw_event_reader.hpp"
 #include "recording/raw_event_recorder.hpp"
+#include "session/session.hpp"
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 using namespace adapters::coinbase;
@@ -32,10 +34,6 @@ static void display(const CoinbaseMessagePipeline& pipeline) {
 
 int main(int argc, char** argv) {
     try {
-        std::string mode, path, venue = "coinbase", instrument = "BTC-USD";
-        int force_seconds = 0;
-        recording::RawQueueConfig queue_config;
-        std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024;
         auto positive = [](const std::string& value) {
             std::size_t consumed = 0;
             if (value.empty() || value.front() == '-')
@@ -45,6 +43,59 @@ int main(int argc, char** argv) {
                 throw std::invalid_argument("expected positive integer");
             return number;
         };
+        if (argc > 1 &&
+            (std::string_view(argv[1]) == "replay" || std::string_view(argv[1]) == "capture")) {
+            const bool replay = std::string_view(argv[1]) == "replay";
+            std::string directory, output;
+            bool allow_incomplete = false, include_final_book = false;
+            recording::RawQueueConfig capture_queue;
+            std::uintmax_t capture_minimum_disk = 64 * 1024 * 1024;
+            int capture_force_seconds = 0;
+            for (int i = 2; i < argc; ++i) {
+                std::string option = argv[i];
+                if (option == "--allow-incomplete" && replay)
+                    allow_incomplete = true;
+                else if (option == "--include-final-book" && replay)
+                    include_final_book = true;
+                else if ((option == "--session" || (option == "--output" && replay)) &&
+                         i + 1 < argc) {
+                    auto& destination = option == "--session" ? directory : output;
+                    if (!destination.empty())
+                        throw std::invalid_argument("duplicate option");
+                    destination = argv[++i];
+                } else if (!replay && i + 1 < argc &&
+                           (option == "--queue-messages" || option == "--queue-bytes" ||
+                            option == "--minimum-free-disk-bytes" ||
+                            option == "--force-disconnect-after-seconds")) {
+                    auto value = positive(argv[++i]);
+                    if (option == "--queue-messages")
+                        capture_queue.maximum_messages = value;
+                    else if (option == "--queue-bytes")
+                        capture_queue.maximum_bytes = value;
+                    else if (option == "--minimum-free-disk-bytes")
+                        capture_minimum_disk = value;
+                    else {
+                        if (value > static_cast<unsigned>(std::numeric_limits<int>::max()))
+                            throw std::invalid_argument("disconnect delay too large");
+                        capture_force_seconds = static_cast<int>(value);
+                    }
+                } else
+                    throw std::invalid_argument("unknown or missing session option: " + option);
+            }
+            if (directory.empty() || (replay && output.empty()))
+                throw std::invalid_argument(
+                    "capture --session NEW_DIRECTORY | replay --session DIRECTORY --output "
+                    "NEW_RESULT [--allow-incomplete] [--include-final-book]");
+            if (replay)
+                return sessions::replay(directory, output, allow_incomplete, include_final_book);
+            sessions::Capture capture(directory);
+            return pipeline::run_live(capture.raw_path(), capture_force_seconds, capture_queue,
+                                      capture_minimum_disk, &capture);
+        }
+        std::string mode, path, venue = "coinbase", instrument = "BTC-USD";
+        int force_seconds = 0;
+        recording::RawQueueConfig queue_config;
+        std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024;
         for (int i = 1; i < argc; i += 2) {
             if (i + 1 == argc)
                 throw std::invalid_argument("option requires a value");

@@ -32,8 +32,14 @@ target_link_libraries(coinbase_websocket PUBLIC arbitrage_core Boost::headers Op
 add_library(coinbase_recovery src/adapters/coinbase/coinbase_connection_manager.cpp)
 target_link_libraries(coinbase_recovery PUBLIC coinbase_adapter coinbase_websocket)
 find_package(Threads REQUIRED)
-add_library(pipeline_runtime src/pipeline/runtime_status.cpp src/pipeline/live_runtime.cpp)
+add_library(pipeline_runtime src/pipeline/runtime_status.cpp src/pipeline/live_runtime.cpp src/session/session.cpp)
 target_link_libraries(pipeline_runtime PUBLIC coinbase_recovery raw_recording Threads::Threads)
+target_include_directories(pipeline_runtime SYSTEM PUBLIC third_party)
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE SESSION_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE)
+target_compile_definitions(pipeline_runtime PRIVATE
+    SESSION_GIT_COMMIT="${SESSION_COMMIT}" SESSION_BUILD_TYPE="$<CONFIG>"
+    SESSION_OS="${CMAKE_SYSTEM_NAME}" SESSION_ARCH="${CMAKE_SYSTEM_PROCESSOR}")
 add_executable(arbitrage_engine src/main.cpp)
 target_link_libraries(arbitrage_engine PRIVATE pipeline_runtime)
 
@@ -116,4 +122,12 @@ if(BUILD_TESTING AND CMAKE_BUILD_TYPE STREQUAL "Release")
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase/benchmark.jsonl
             $<TARGET_FILE:arbitrage_engine>)
     set_tests_properties(benchmark_repeatability PROPERTIES TIMEOUT 60)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(session_replay_test tests/unit/session_replay_test.cpp)
+    target_include_directories(session_replay_test SYSTEM PRIVATE tests/vendor)
+    target_compile_definitions(session_replay_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
+    target_link_libraries(session_replay_test PRIVATE pipeline_runtime)
+    add_test(NAME session_replay_test COMMAND session_replay_test)
 endif()

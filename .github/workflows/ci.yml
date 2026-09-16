@@ -39,3 +39,7 @@ jobs:
           benchmarks/*.cpp
           tests/unit/ingestion_runtime_test.cpp
           tests/unit/coinbase_recovery_test.cpp
+          include/core/clock.hpp
+          include/session/*.hpp
+          src/session/*.cpp
+          tests/unit/session_replay_test.cpp
