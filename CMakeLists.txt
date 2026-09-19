@@ -26,14 +26,26 @@ target_include_directories(coinbase_adapter SYSTEM PRIVATE third_party)
 
 find_package(Boost CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+add_library(websocket_transport src/transport/websocket_client.cpp)
+target_link_libraries(websocket_transport PUBLIC arbitrage_core Boost::headers OpenSSL::SSL OpenSSL::Crypto)
 add_library(coinbase_websocket src/adapters/coinbase/coinbase_websocket_client.cpp)
-target_link_libraries(coinbase_websocket PUBLIC arbitrage_core Boost::headers OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(coinbase_websocket PUBLIC websocket_transport)
+
+add_library(kraken_adapter
+    src/adapters/kraken/kraken_l2_parser.cpp
+    src/adapters/kraken/kraken_book_processor.cpp
+    src/adapters/kraken/kraken_checksum.cpp
+    src/adapters/kraken/kraken_symbol_mapper.cpp
+    src/adapters/kraken/kraken_subscription.cpp
+    src/adapters/kraken/kraken_websocket_client.cpp)
+target_link_libraries(kraken_adapter PUBLIC arbitrage_core websocket_transport)
+target_include_directories(kraken_adapter SYSTEM PUBLIC third_party)
 
 add_library(coinbase_recovery src/adapters/coinbase/coinbase_connection_manager.cpp)
 target_link_libraries(coinbase_recovery PUBLIC coinbase_adapter coinbase_websocket)
 find_package(Threads REQUIRED)
-add_library(pipeline_runtime src/pipeline/runtime_status.cpp src/pipeline/live_runtime.cpp src/session/session.cpp)
-target_link_libraries(pipeline_runtime PUBLIC coinbase_recovery raw_recording Threads::Threads)
+add_library(pipeline_runtime src/pipeline/runtime_status.cpp src/pipeline/live_runtime.cpp src/session/session.cpp src/pipeline/kraken_runtime.cpp)
+target_link_libraries(pipeline_runtime PUBLIC coinbase_recovery kraken_adapter raw_recording Threads::Threads)
 target_include_directories(pipeline_runtime SYSTEM PUBLIC third_party)
 execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     OUTPUT_VARIABLE SESSION_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -130,4 +142,14 @@ if(BUILD_TESTING)
     target_compile_definitions(session_replay_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/coinbase")
     target_link_libraries(session_replay_test PRIVATE pipeline_runtime)
     add_test(NAME session_replay_test COMMAND session_replay_test)
+endif()
+
+if(BUILD_TESTING)
+    foreach(test kraken_l2_parser kraken_checksum kraken_book_processor kraken_replay)
+        add_executable(${test}_test tests/unit/${test}_test.cpp)
+        target_include_directories(${test}_test SYSTEM PRIVATE tests/vendor)
+        target_compile_definitions(${test}_test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/kraken")
+        target_link_libraries(${test}_test PRIVATE pipeline_runtime)
+        add_test(NAME ${test}_test COMMAND ${test}_test)
+    endforeach()
 endif()

@@ -49,6 +49,10 @@ using AppendRaw = std::function<bool(recording::RawEventRecorder&, const recordi
 void write_raw(recording::RawRecordingQueue&, SharedRuntime&, const std::filesystem::path&,
                std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024, AppendRaw append = {});
 std::string unpersisted_processed_range(const RuntimeStatus&);
+int run_kraken(sessions::Capture&, std::size_t depth, int duration_seconds = 0,
+               recording::RawQueueConfig = {},
+               std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024,
+               int force_disconnect_seconds = 0);
 int run_live(const std::filesystem::path&, int force_seconds, recording::RawQueueConfig = {},
              std::uintmax_t minimum_free_disk_bytes = 64 * 1024 * 1024,
              sessions::Capture* capture = nullptr);

@@ -1,4 +1,6 @@
 #include "session/session.hpp"
+#include "adapters/kraken/kraken_book_processor.hpp"
+#include "adapters/kraken/kraken_subscription.hpp"
 #include "recording/raw_event_reader.hpp"
 #include <ctime>
 #include <fcntl.h>
@@ -103,11 +105,11 @@ struct Scan {
     std::uint64_t records = 0;
     std::set<std::uint64_t> connections;
 };
-Scan scan(const std::filesystem::path& raw) {
+Scan scan(const std::filesystem::path& raw, core::Venue venue = core::Venue::Coinbase) {
     Scan result;
     recording::RawEventReader reader(raw);
     while (auto e = reader.next()) {
-        if (e->venue != core::Venue::Coinbase)
+        if (e->venue != venue)
             throw std::runtime_error("unexpected venue");
         ++result.records;
         result.connections.insert(e->connection_id);
@@ -141,13 +143,26 @@ json configuration() {
         {"product_metadata", {{"coinbase:BTC-USD", {{"price_scale", 2}, {"quantity_scale", 8}}}}},
         {"processor_version", 1}};
 }
-Capture::Capture(const std::filesystem::path& directory) : directory_(directory) {
+json kraken_configuration(std::size_t depth) {
+    adapters::kraken::validate_depth(depth);
+    return {{"venues", {"kraken"}},
+            {"instruments", {"BTC_USD"}},
+            {"venue_symbols", {{"kraken:BTC_USD", "BTC/USD"}}},
+            {"subscriptions", {{"kraken:BTC_USD", {{"channel", "book"}, {"depth", depth}}}}},
+            {"product_metadata", {{"kraken:BTC_USD", {{"price_scale", 2}, {"quantity_scale", 8}}}}},
+            {"processor_version", 1}};
+}
+Capture::Capture(const std::filesystem::path& directory, std::string venue, std::size_t depth)
+    : directory_(directory) {
+    if (venue != "coinbase" && venue != "kraken")
+        throw std::invalid_argument("unsupported venue");
     if (!directory.parent_path().empty())
         std::filesystem::create_directories(directory.parent_path());
     if (!std::filesystem::create_directory(directory))
         throw std::runtime_error("session directory must be new");
     std::filesystem::create_directory(directory / "raw");
-    manifest_ = configuration();
+    manifest_ = venue == "kraken" ? kraken_configuration(depth) : configuration();
+    const auto config_hash = sha256(manifest_.dump());
     manifest_["format_version"] = 1;
     manifest_["session_id"] = directory.filename().string();
     manifest_["status"] = "in_progress";
@@ -155,11 +170,13 @@ Capture::Capture(const std::filesystem::path& directory) : directory_(directory)
     manifest_["application"] = {{"git_commit", SESSION_GIT_COMMIT},
                                 {"build_type", SESSION_BUILD_TYPE}};
     manifest_["platform"] = {{"os", SESSION_OS}, {"architecture", SESSION_ARCH}};
-    manifest_["configuration_hash"] = sha256(configuration().dump());
-    manifest_["raw_files"] = json::array({{{"venue", "coinbase"}, {"path", "raw/coinbase.jsonl"}}});
+    manifest_["configuration_hash"] = config_hash;
+    manifest_["raw_files"] = json::array({{{"venue", venue}, {"path", "raw/" + venue + ".jsonl"}}});
     publish(directory_ / "manifest.inprogress.json", manifest_);
 }
-std::filesystem::path Capture::raw_path() const { return directory_ / "raw/coinbase.jsonl"; }
+std::filesystem::path Capture::raw_path() const {
+    return directory_ / manifest_.at("raw_files")[0].at("path").get<std::string>();
+}
 void Capture::finalize(const pipeline::RuntimeStatus& s) {
     using pipeline::RuntimeState;
     if (s.runtime_state == RuntimeState::Starting || s.runtime_state == RuntimeState::Running ||
@@ -209,7 +226,9 @@ void Capture::finalize(const pipeline::RuntimeStatus& s) {
         raw["first_record_index"] = s.written_messages ? json(0) : json(nullptr);
         raw["last_record_index"] = optional(s.progress.last_written_index);
         try {
-            auto scanned = scan(raw_path());
+            auto scanned =
+                scan(raw_path(), manifest_["venues"][0] == "kraken" ? core::Venue::Kraken
+                                                                    : core::Venue::Coinbase);
             manifest_["connections"] = scanned.connections.size();
             if (scanned.records != s.written_messages)
                 manifest_["status"] = "recording_failure";
@@ -246,19 +265,29 @@ int replay(const std::filesystem::path& directory, const std::filesystem::path& 
     bool complete = manifest.at("status") == "complete";
     if (!complete && !allow_incomplete)
         throw std::runtime_error("incomplete session requires --allow-incomplete");
-    auto config = configuration();
+    const bool kraken = manifest.at("venues") == json::array({"kraken"});
+    auto depth =
+        kraken ? manifest.at("subscriptions").at("kraken:BTC_USD").at("depth").get<std::size_t>()
+               : 100;
+    auto config = kraken ? kraken_configuration(depth) : configuration();
+    const std::string product_key = kraken ? "kraken:BTC_USD" : "coinbase:BTC-USD";
     auto recorded_products = manifest.at("product_metadata");
     if (!recorded_products.is_object() || recorded_products.size() != 1 ||
-        !recorded_products.contains("coinbase:BTC-USD"))
+        !recorded_products.contains(product_key))
         throw std::runtime_error("unexpected product metadata");
-    const auto& recorded_precision = recorded_products.at("coinbase:BTC-USD");
+    const auto& recorded_precision = recorded_products.at(product_key);
     if (!recorded_precision.is_object() || recorded_precision.size() != 2)
         throw std::runtime_error("invalid precision metadata");
     for (auto key : {"price_scale", "quantity_scale"})
         if (!recorded_precision.at(key).is_number_unsigned() ||
             recorded_precision.at(key).get<std::uint64_t>() > 18)
             throw std::runtime_error("unsupported precision scale");
+    if (kraken && recorded_products != config["product_metadata"])
+        throw std::runtime_error("unsupported Kraken precision");
     config["product_metadata"] = recorded_products;
+    if (kraken && (manifest.at("venue_symbols") != config["venue_symbols"] ||
+                   manifest.at("subscriptions") != config["subscriptions"]))
+        throw std::runtime_error("unsupported Kraken subscription");
     for (auto key : {"venues", "instruments", "product_metadata", "processor_version"})
         if (manifest.at(key) != config.at(key))
             throw std::runtime_error(
@@ -268,7 +297,7 @@ int replay(const std::filesystem::path& directory, const std::filesystem::path& 
     if (manifest.at("raw_files").size() != 1)
         throw std::runtime_error("expected one Coinbase raw file");
     const auto& metadata = manifest.at("raw_files").at(0);
-    if (metadata.at("venue") != "coinbase")
+    if (metadata.at("venue") != (kraken ? "kraken" : "coinbase"))
         throw std::runtime_error("unexpected raw venue");
     std::filesystem::path relative = metadata.at("path").get<std::string>();
     if (relative.is_absolute())
@@ -287,7 +316,10 @@ int replay(const std::filesystem::path& directory, const std::filesystem::path& 
         throw std::runtime_error("raw file size mismatch");
     if ((complete || metadata.contains("sha256")) && metadata.at("sha256") != checksum)
         throw std::runtime_error("raw checksum mismatch");
-    auto scanned = scan(raw); // Full validation precedes processing, including all record indexes.
+    auto scanned =
+        scan(raw, kraken ? core::Venue::Kraken
+                         : core::Venue::Coinbase); // Full validation precedes processing, including
+                                                   // all record indexes.
     if ((complete || metadata.contains("records")) && metadata.at("records") != scanned.records)
         throw std::runtime_error("raw record count mismatch");
     if (complete) {
@@ -317,6 +349,102 @@ int replay(const std::filesystem::path& directory, const std::filesystem::path& 
             !event.at("reason").is_string())
             throw std::runtime_error("invalid lifecycle event");
         last_lifecycle_index = index;
+    }
+    if (kraken) {
+        adapters::kraken::KrakenBookProcessor processor(depth);
+        json outcomes = json::object(), transitions = json::array();
+        std::optional<std::uint64_t> connection;
+        std::uint64_t count = 0;
+        const auto lifecycle = manifest.value("lifecycle_events", json::array());
+        std::size_t lifecycle_index = 0;
+        auto transition = [&](core::BookState before, std::string_view reason) {
+            if (before != processor.book().state())
+                transitions.push_back({{"record_index", count},
+                                       {"from", book_name(before)},
+                                       {"to", book_name(processor.book().state())},
+                                       {"reason", reason}});
+        };
+        auto apply_lifecycle = [&] {
+            while (lifecycle_index < lifecycle.size() &&
+                   lifecycle[lifecycle_index]["before_record_index"] == count) {
+                auto before = processor.book().state();
+                const auto& event = lifecycle[lifecycle_index++];
+                if (event["state"] == "STALE")
+                    processor.stale();
+                else if (event["state"] == "INVALID")
+                    processor.invalidate();
+                else
+                    processor.disconnect();
+                transition(before, event["reason"].get<std::string>());
+            }
+        };
+        recording::RawEventReader reader(raw);
+        while (auto e = reader.next()) {
+            apply_lifecycle();
+            if (connection && e->connection_id < *connection)
+                throw std::runtime_error("connection order regression");
+            if (connection != e->connection_id) {
+                auto before = processor.book().state();
+                if (connection)
+                    processor.reset_connection();
+                transition(before, "new_connection");
+                connection = e->connection_id;
+            }
+            auto before = processor.book().state();
+            processor.process(e->payload, e->receive_wall_time, e->receive_monotonic_time);
+            transition(before, processor.outcome);
+            auto& n = outcomes[processor.outcome];
+            n = n.is_null() ? 1 : n.get<std::uint64_t>() + 1;
+            ++count;
+        }
+        apply_lifecycle();
+        if ((complete && lifecycle_index != lifecycle.size()) || reader.has_error() ||
+            count != scanned.records || file_sha256(raw) != checksum)
+            throw std::runtime_error("source changed or invalid lifecycle ordering");
+        if (!complete && manifest.at("status") != "in_progress")
+            processor.invalidate();
+        const auto& book = processor.book();
+        json contents = {{"bids", json::array()},
+                         {"asks", json::array()},
+                         {"state", book_name(book.state())},
+                         {"book_sequence", nullptr}};
+        for (auto [p, q] : book.bids())
+            contents["bids"].push_back({p.raw(), q.raw()});
+        for (auto [p, q] : book.asks())
+            contents["asks"].push_back({p.raw(), q.raw()});
+        json result = {{"format_version", 1},
+                       {"source_session_id", manifest.at("session_id")},
+                       {"source_manifest_sha256", manifest_checksum},
+                       {"source_raw_sha256", checksum},
+                       {"configuration_hash", manifest.at("configuration_hash")},
+                       {"complete_source", complete},
+                       {"research_valid", complete},
+                       {"messages_read", count},
+                       {"outcomes", outcomes},
+                       {"metrics", processor.metrics()},
+                       {"checksum", processor.checksum()},
+                       {"final_book_state", book_name(book.state())},
+                       {"final_sequence", nullptr},
+                       {"final_bid_levels", book.bids().size()},
+                       {"final_ask_levels", book.asks().size()},
+                       {"final_best_bid",
+                        book.best_bid() ? json(book.best_bid()->price.raw()) : json(nullptr)},
+                       {"final_best_ask",
+                        book.best_ask() ? json(book.best_ask()->price.raw()) : json(nullptr)},
+                       {"final_book_hash", sha256(contents.dump())},
+                       {"state_transitions", transitions},
+                       {"state_transition_hash", sha256(transitions.dump())}};
+        auto canonical = result;
+        canonical.erase("source_session_id");
+        canonical.erase("source_manifest_sha256");
+        canonical["final_book"] = contents;
+        result["deterministic_result_hash"] = sha256(canonical.dump());
+        if (include_final_book)
+            result["final_book"] = contents;
+        if (file_sha256(manifest_path) != manifest_checksum)
+            throw std::runtime_error("manifest changed during replay");
+        publish(output, result);
+        return 0;
     }
     core::OrderBook book(core::Venue::Coinbase, core::Instrument::BTC_USD);
     core::SequenceTracker sequence;

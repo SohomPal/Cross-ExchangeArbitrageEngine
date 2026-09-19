@@ -4,7 +4,8 @@ A C++20 project building the market data foundation for a cross-exchange
 arbitrage engine.
 
 The current implementation includes exact fixed-point numeric types, canonical
-market events, an order book, a live Coinbase Level 2 feed, and raw message recording with offline replay.
+market events, an order book, standalone Coinbase and checksum-validated Kraken
+Level 2 feeds, and raw message recording with offline replay.
 Trading logic is not implemented.
 
 After installing the [development dependencies](docs/development.md), run
@@ -33,6 +34,7 @@ Sequence continuity includes all channels; only L2 messages modify the book.
   and dependencies.
 - [Architecture](docs/architecture.md) — components and their responsibilities.
 - [Fixed-point numbers](docs/fixed-point.md) — numerical design and validation rules.
+- [Kraken adapter](docs/kraken-adapter.md) — exact decimals, CRC32 validation, capture and replay.
 - [Coinbase adapter](docs/coinbase-adapter.md) — parsing behavior and product metadata.
 - [Raw data format](docs/raw-data-format.md) — recording schema and storage guarantees.
 

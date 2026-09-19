@@ -27,6 +27,11 @@ jobs:
       - run: python -m pip install clang-format==18.1.8
       - run: >-
           clang-format --dry-run --Werror
+          include/adapters/kraken/*.hpp
+          src/adapters/kraken/*.cpp
+          include/transport/*.hpp
+          src/transport/*.cpp
+          tests/unit/kraken*_test.cpp
           include/adapters/coinbase/*.hpp
           src/adapters/coinbase/*.cpp
           tests/unit/coinbase_l2_parser_test.cpp

@@ -46,14 +46,33 @@ int main(int argc, char** argv) {
         if (argc > 1 &&
             (std::string_view(argv[1]) == "replay" || std::string_view(argv[1]) == "capture")) {
             const bool replay = std::string_view(argv[1]) == "replay";
-            std::string directory, output;
+            std::string directory, output, capture_venue = "coinbase",
+                                           capture_instrument = "BTC_USD";
+            std::size_t capture_depth = 100;
+            int duration_seconds = 0;
             bool allow_incomplete = false, include_final_book = false;
             recording::RawQueueConfig capture_queue;
             std::uintmax_t capture_minimum_disk = 64 * 1024 * 1024;
             int capture_force_seconds = 0;
             for (int i = 2; i < argc; ++i) {
                 std::string option = argv[i];
-                if (option == "--allow-incomplete" && replay)
+                if (!replay && i + 1 < argc &&
+                    (option == "--venue" || option == "--instrument" || option == "--depth" ||
+                     option == "--duration-seconds")) {
+                    std::string value = argv[++i];
+                    if (option == "--venue")
+                        capture_venue = value;
+                    else if (option == "--instrument")
+                        capture_instrument = value;
+                    else if (option == "--depth")
+                        capture_depth = positive(value);
+                    else {
+                        auto n = positive(value);
+                        if (n > std::numeric_limits<int>::max())
+                            throw std::invalid_argument("duration too large");
+                        duration_seconds = static_cast<int>(n);
+                    }
+                } else if (option == "--allow-incomplete" && replay)
                     allow_incomplete = true;
                 else if (option == "--include-final-book" && replay)
                     include_final_book = true;
@@ -82,13 +101,27 @@ int main(int argc, char** argv) {
                 } else
                     throw std::invalid_argument("unknown or missing session option: " + option);
             }
+            if (!replay && directory.empty()) {
+                auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+                directory = "data/sessions/session-" + std::to_string(ns);
+            }
             if (directory.empty() || (replay && output.empty()))
                 throw std::invalid_argument(
                     "capture --session NEW_DIRECTORY | replay --session DIRECTORY --output "
                     "NEW_RESULT [--allow-incomplete] [--include-final-book]");
             if (replay)
                 return sessions::replay(directory, output, allow_incomplete, include_final_book);
-            sessions::Capture capture(directory);
+            if (capture_instrument != "BTC_USD" &&
+                !(capture_venue == "coinbase" && capture_instrument == "BTC-USD"))
+                throw std::invalid_argument("unsupported instrument");
+            if (capture_venue != "kraken" && (duration_seconds || capture_depth != 100))
+                throw std::invalid_argument("depth and duration require Kraken capture");
+            sessions::Capture capture(directory, capture_venue, capture_depth);
+            if (capture_venue == "kraken")
+                return pipeline::run_kraken(capture, capture_depth, duration_seconds, capture_queue,
+                                            capture_minimum_disk, capture_force_seconds);
             return pipeline::run_live(capture.raw_path(), capture_force_seconds, capture_queue,
                                       capture_minimum_disk, &capture);
         }
